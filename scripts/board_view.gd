@@ -4,22 +4,23 @@ extends Control
 signal tile_hovered(pos: Vector2i)
 signal move_dropped(dir: Vector2i)
 signal ability_dropped(kind: int, dir: Vector2i)
+signal ability_clicked(kind: int)
 signal drag_cancelled(reason: String)
 signal plan_slot_clicked(slot: int)
 
 const PAD_LEFT := 36.0
 const PAD_TOP := 48.0
-const PAD_RIGHT := 108.0
+const PAD_RIGHT := 124.0
 const PAD_BOTTOM := 24.0
 const FX_LIFE := 0.85
 const ABILITY_DRAG_MIN := 36.0
-const ICON_R := 26.0
+const ICON_R := 24.0
 const TEX_FIST := preload("res://icons/fist.png")
 const TEX_SHURIKEN := preload("res://icons/shuriken.png")
 const CELL_MAX := 72.0
 const CELL_MIN := 40.0
 
-enum DragKind { NONE, TOKEN, SHURIKEN, PUNCH }
+enum DragKind { NONE, TOKEN, ABILITY }
 
 var cell := CELL_MAX
 var match_ref: ArenaMatch
@@ -81,15 +82,18 @@ func clear_fx() -> void:
 
 var plan_steps: Array = []
 var plan_origin := Vector2i(-1, -1)
+var used_kinds: Array = []
+var drag_ability: int = -1
 const ABILITY_ARROW := 70.0
 
 
-func set_declare_context(active: bool, player_id: int, is_full: bool, steps: Array = [], origin_tile: Vector2i = Vector2i(-1, -1)) -> void:
+func set_declare_context(active: bool, player_id: int, is_full: bool, steps: Array = [], origin_tile: Vector2i = Vector2i(-1, -1), used: Array = []) -> void:
 	declare_active = active
 	declare_player = player_id
 	slots_full = is_full
 	plan_steps = steps.duplicate(true) if active else []
 	plan_origin = origin_tile if active else Vector2i(-1, -1)
+	used_kinds = used.duplicate() if active else []
 	if not active and drag != DragKind.NONE:
 		_cancel_drag("off")
 	queue_redraw()
@@ -103,16 +107,19 @@ func _ghost_slot_at(local: Vector2) -> int:
 			ArenaMatch.ActionKind.MOVE:
 				if local.distance_to(cell_center(step.to)) <= 22.0:
 					return slot
-			ArenaMatch.ActionKind.PUNCH:
+			ArenaMatch.ActionKind.PUNCH, ArenaMatch.ActionKind.FLYING_KICK, ArenaMatch.ActionKind.WINDWALL:
 				var mid := cell_center(step.from).lerp(_clamped_point(step.from + step.dir), 0.5)
 				if local.distance_to(mid) <= 18.0:
 					return slot
-			ArenaMatch.ActionKind.SHURIKEN:
+			ArenaMatch.ActionKind.SHURIKEN, ArenaMatch.ActionKind.FIREBALL:
 				if local.distance_to(cell_center(step.from)) <= 16.0:
 					return slot
 				for t in step.tiles:
 					if local.distance_to(cell_center(t)) <= 14.0:
 						return slot
+			ArenaMatch.ActionKind.FROST_RING, ArenaMatch.ActionKind.HEAL:
+				if local.distance_to(cell_center(step.from)) <= 20.0:
+					return slot
 	return -1
 
 
@@ -122,19 +129,28 @@ func _plan_origin_tile() -> Vector2i:
 	if declare_player >= 0 and match_ref != null:
 		return match_ref.positions[declare_player]
 	return Vector2i(-1, -1)
-	if plan_origin.x >= 0:
-		return plan_origin
-	if declare_player >= 0 and match_ref != null:
-		return match_ref.positions[declare_player]
-	return Vector2i(-1, -1)
+
+
+func _rail_kinds() -> Array:
+	if match_ref == null or declare_player < 0:
+		return [ArenaMatch.ActionKind.SHURIKEN, ArenaMatch.ActionKind.PUNCH]
+	var out: Array = []
+	for k in match_ref.owned[declare_player]:
+		if k != ArenaMatch.ActionKind.MOVE:
+			out.append(k)
+	return out
+
+
+func _rail_pos(index: int) -> Vector2:
+	return Vector2(PAD_LEFT + cell * ArenaMatch.COLS + 54.0, PAD_TOP + 26.0 + float(index) * 62.0)
 
 
 func _shuriken_pos() -> Vector2:
-	return Vector2(PAD_LEFT + cell * ArenaMatch.COLS + 54.0, PAD_TOP + 48.0)
+	return _rail_pos(0)
 
 
 func _punch_pos() -> Vector2:
-	return Vector2(PAD_LEFT + cell * ArenaMatch.COLS + 54.0, PAD_TOP + cell * ArenaMatch.ROWS - 28.0)
+	return _rail_pos(1)
 
 
 func _process(delta: float) -> void:
@@ -214,28 +230,24 @@ func _try_begin_drag(local: Vector2) -> void:
 		drag_cancelled.emit("full")
 		queue_redraw()
 		return
-	if local.distance_to(_shuriken_pos()) <= ICON_R + 8.0:
-		drag = DragKind.SHURIKEN
-		ability_from = _shuriken_pos()
-		ability_dir = Vector2i.ZERO
-		drag_pointer = local
-		set_process_input(true)
-		queue_redraw()
-		return
-	if local.distance_to(_punch_pos()) <= ICON_R + 8.0:
-		drag = DragKind.PUNCH
-		ability_from = _punch_pos()
-		ability_dir = Vector2i.ZERO
-		drag_pointer = local
-		set_process_input(true)
-		queue_redraw()
+	var kinds := _rail_kinds()
+	for i in kinds.size():
+		if local.distance_to(_rail_pos(i)) <= ICON_R + 8.0:
+			drag = DragKind.ABILITY
+			drag_ability = int(kinds[i])
+			ability_from = _rail_pos(i)
+			ability_dir = Vector2i.ZERO
+			drag_pointer = local
+			set_process_input(true)
+			queue_redraw()
+			return
 
 
 func _update_drag(local: Vector2) -> void:
 	drag_pointer = local
 	if drag == DragKind.TOKEN:
 		ghost_tile = _cell_at(local)
-	elif drag == DragKind.SHURIKEN or drag == DragKind.PUNCH:
+	elif drag == DragKind.ABILITY:
 		var delta := local - ability_from
 		if delta.length() >= ABILITY_DRAG_MIN:
 			ability_dir = _octant_dir(delta)
@@ -264,14 +276,17 @@ func _finish_drag(local: Vector2) -> void:
 					return
 			invalid_t = 0.4
 			drag_cancelled.emit("invalid_move")
-	elif mode == DragKind.SHURIKEN or mode == DragKind.PUNCH:
-		if ability_dir == Vector2i.ZERO:
+	elif mode == DragKind.ABILITY:
+		var kind: ArenaMatch.ActionKind = drag_ability as ArenaMatch.ActionKind
+		if not ArenaMatch.needs_aim(kind):
+			ability_clicked.emit(kind)
+		elif ability_dir == Vector2i.ZERO:
 			invalid_t = 0.35
 			drag_cancelled.emit("short")
 		else:
-			var kind := ArenaMatch.ActionKind.SHURIKEN if mode == DragKind.SHURIKEN else ArenaMatch.ActionKind.PUNCH
 			ability_dropped.emit(kind, ability_dir)
 		ability_dir = Vector2i.ZERO
+		drag_ability = -1
 	queue_redraw()
 
 
@@ -279,6 +294,7 @@ func _cancel_drag(_reason: String) -> void:
 	drag = DragKind.NONE
 	ghost_tile = Vector2i(-1, -1)
 	ability_dir = Vector2i.ZERO
+	drag_ability = -1
 	set_process_input(false)
 	queue_redraw()
 
@@ -440,13 +456,13 @@ func _draw_plan_ghosts() -> void:
 		col.a = a
 		var kind: ArenaMatch.ActionKind = step.kind
 		match kind:
-			ArenaMatch.ActionKind.MOVE:
+			ArenaMatch.ActionKind.MOVE, ArenaMatch.ActionKind.FLYING_KICK:
 				_draw_arrow(cell_center(step.from), cell_center(step.to), col, 2.4)
 				var c := cell_center(step.to)
 				draw_circle(c, 20.0, col)
 				draw_circle(c, 20.0, Color(1, 1, 1, a), false, 1.6)
 				_draw_slot_badge(c + Vector2(14, -18), slot + 1, col_base, a)
-			ArenaMatch.ActionKind.SHURIKEN:
+			ArenaMatch.ActionKind.SHURIKEN, ArenaMatch.ActionKind.FIREBALL:
 				var pts: Array[Vector2] = [cell_center(step.from)]
 				for t in step.tiles:
 					pts.append(cell_center(t))
@@ -455,12 +471,19 @@ func _draw_plan_ghosts() -> void:
 				for i in range(pts.size() - 1):
 					_draw_dashed(pts[i], pts[i + 1], col, 6.0, 5.0, 1.8)
 				_draw_slot_badge(pts[mini(1, pts.size() - 1)] + Vector2(8, -16), slot + 1, col_base, a)
-			ArenaMatch.ActionKind.PUNCH:
+			ArenaMatch.ActionKind.PUNCH, ArenaMatch.ActionKind.WINDWALL:
 				var a_pt := cell_center(step.from)
 				var b_pt := _clamped_point(step.from + step.dir)
 				var mid := a_pt.lerp(b_pt, 0.5)
 				_draw_impact(mid, col)
 				_draw_slot_badge(mid + Vector2(10, -16), slot + 1, col_base, a)
+			ArenaMatch.ActionKind.FROST_RING:
+				for t in step.tiles:
+					var rc := cell_center(t)
+					draw_circle(rc, 10.0, col, false, 1.4)
+				_draw_slot_badge(cell_center(step.from) + Vector2(16, -16), slot + 1, col_base, a)
+			ArenaMatch.ActionKind.HEAL:
+				_draw_slot_badge(cell_center(step.from) + Vector2(16, -22), slot + 1, col_base, a)
 	if plan_origin.x >= 0 and plan_origin != match_ref.positions[declare_player] and drag != DragKind.TOKEN:
 		var ring: Color = col_base
 		ring.a = 0.85
@@ -494,19 +517,51 @@ func _draw_ghost() -> void:
 
 
 func _draw_ability_rail() -> void:
-	var s := _shuriken_pos()
-	var p := _punch_pos()
-	var accent: Color = PLAYER_COLORS[declare_player] if declare_active and declare_player >= 0 else Color("8b93a7")
-	var shuriken_mod := Color.WHITE if drag != DragKind.SHURIKEN else Color(1.15, 1.15, 1.15)
-	var punch_mod := Color.WHITE if drag != DragKind.PUNCH else Color(1.15, 1.15, 1.15)
-	draw_circle(s, ICON_R + 4.0, Color(0.12, 0.14, 0.18, 0.92))
-	draw_circle(s, ICON_R + 4.0, accent, false, 2.0)
-	_draw_icon_tex(TEX_SHURIKEN, s, 40.0, shuriken_mod)
-	draw_string(ThemeDB.fallback_font, s + Vector2(-28, 44), "Shuriken", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("c5c9d4"))
-	draw_circle(p, ICON_R + 4.0, Color(0.12, 0.14, 0.18, 0.92))
-	draw_circle(p, ICON_R + 4.0, accent, false, 2.0)
-	_draw_icon_tex(TEX_FIST, p, 40.0, punch_mod)
-	draw_string(ThemeDB.fallback_font, p + Vector2(-18, 44), "Punch", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("c5c9d4"))
+	if not declare_active:
+		return
+	var accent: Color = PLAYER_COLORS[declare_player] if declare_player >= 0 else Color("8b93a7")
+	var kinds := _rail_kinds()
+	for i in kinds.size():
+		var kind: ArenaMatch.ActionKind = kinds[i]
+		var s := _rail_pos(i)
+		var dragging := drag == DragKind.ABILITY and drag_ability == int(kind)
+		var spent := used_kinds.has(kind) and not ArenaMatch.is_unlimited(kind)
+		var mod := Color(1.15, 1.15, 1.15) if dragging else Color.WHITE
+		if spent:
+			mod = Color(0.55, 0.55, 0.58)
+		draw_circle(s, ICON_R + 4.0, Color(0.12, 0.14, 0.18, 0.92))
+		var ring := accent.darkened(0.25) if spent else accent
+		draw_circle(s, ICON_R + 4.0, ring, false, 2.0)
+		_draw_kind_icon(kind, s, 36.0, mod)
+		draw_string(
+			ThemeDB.fallback_font,
+			s + Vector2(-30, 38),
+			ArenaMatch.kind_name(kind),
+			HORIZONTAL_ALIGNMENT_LEFT,
+			-1,
+			11,
+			Color("8b93a7") if spent else Color("c5c9d4")
+		)
+
+
+func _draw_kind_icon(kind: ArenaMatch.ActionKind, center: Vector2, px: float, modulate: Color = Color.WHITE) -> void:
+	match kind:
+		ArenaMatch.ActionKind.SHURIKEN:
+			_draw_icon_tex(TEX_SHURIKEN, center, px, modulate)
+		ArenaMatch.ActionKind.PUNCH:
+			_draw_icon_tex(TEX_FIST, center, px, modulate)
+		_:
+			var col := modulate
+			draw_circle(center, px * 0.38, Color(0.18, 0.2, 0.24, col.a))
+			draw_string(
+				ThemeDB.fallback_font,
+				center + Vector2(-6, 6),
+				ArenaMatch.kind_letter(kind),
+				HORIZONTAL_ALIGNMENT_LEFT,
+				-1,
+				18,
+				col
+			)
 
 
 func _draw_icon_tex(tex: Texture2D, center: Vector2, px: float, modulate: Color = Color.WHITE) -> void:
@@ -515,7 +570,7 @@ func _draw_icon_tex(tex: Texture2D, center: Vector2, px: float, modulate: Color 
 
 
 func _draw_ability_drag() -> void:
-	if drag != DragKind.SHURIKEN and drag != DragKind.PUNCH:
+	if drag != DragKind.ABILITY:
 		return
 	var col: Color = PLAYER_COLORS[declare_player] if declare_player >= 0 else Color.WHITE
 	if ability_dir == Vector2i.ZERO:
@@ -574,12 +629,18 @@ func _draw_fx_under() -> void:
 		return
 	var kind := str(fx.get("kind", ""))
 	match kind:
-		"move":
+		"move", "kick":
 			_draw_move_fx(a)
-		"shuriken":
+		"shuriken", "fireball":
 			_draw_shuriken_fx(a)
 		"punch":
 			_draw_punch_fx(a)
+		"frost":
+			_draw_frost_fx(a)
+		"heal":
+			pass
+		"windwall":
+			_draw_windwall_fx(a)
 
 
 func _draw_fx_over() -> void:
@@ -587,7 +648,7 @@ func _draw_fx_over() -> void:
 	if a <= 0.0 or fx.is_empty():
 		return
 	var kind := str(fx.get("kind", ""))
-	if kind == "shuriken" or kind == "punch":
+	if kind == "shuriken" or kind == "punch" or kind == "fireball" or kind == "kick" or kind == "frost":
 		_draw_float_text(a)
 
 
@@ -640,6 +701,23 @@ func _draw_punch_fx(a: float) -> void:
 	_draw_impact(mid, col)
 	if int(fx.get("hit_player", -1)) < 0:
 		_draw_whiff_mark(mid + Vector2(0, -14), col)
+
+
+func _draw_frost_fx(a: float) -> void:
+	var actor: int = int(fx.get("actor", 0))
+	var col: Color = PLAYER_COLORS[actor]
+	col.a = a
+	var origin_pos: Vector2i = fx.get("origin", match_ref.positions[actor] if match_ref else Vector2i.ZERO)
+	draw_circle(cell_center(origin_pos), cell * 0.95, col, false, 2.0)
+	for t in fx.get("tiles", []):
+		draw_circle(cell_center(t), 8.0, col, false, 1.6)
+
+
+func _draw_windwall_fx(a: float) -> void:
+	var actor: int = int(fx.get("actor", 0))
+	var col := Color(0.75, 0.88, 1.0, a)
+	var origin_pos: Vector2i = fx.get("origin", Vector2i.ZERO)
+	draw_arc(cell_center(origin_pos), 28.0, 0.0, TAU, 24, col, 3.0, true)
 
 
 func _draw_float_text(a: float) -> void:

@@ -1,7 +1,7 @@
 class_name ArenaMatch
 extends RefCounted
 
-## Pure v1 match rules: 6x6 board, Move / Shuriken / Punch, simultaneous 3-slot rounds.
+## 6x6 simultaneous 3-slot arena. v2: XP, acquired abilities, once-per-round limits.
 
 const COLS := 6
 const ROWS := 6
@@ -10,13 +10,24 @@ const PLAYER_COUNT := 4
 const SLOTS := 3
 const SHURIKEN_DAMAGE := 2
 const PUNCH_DAMAGE := 4
+const HEAL_AMOUNT := 2
+const FLYING_KICK_DAMAGE := 2
+const FROST_DAMAGE := 1
+const FIREBALL_DAMAGE := 3
+const FIREBALL_SPLASH := 1
+const XP_THRESHOLD := 5
 
-enum ActionKind { MOVE, SHURIKEN, PUNCH }
+enum ActionKind { MOVE, SHURIKEN, PUNCH, HEAL, FLYING_KICK, FROST_RING, FIREBALL, WINDWALL }
 enum SpeedTier { INSTANT, NORMAL, SLOW }
-enum Phase { DECLARE, REVEAL, RESOLVING, MATCH_OVER }
+enum Phase { DECLARE, REVEAL, RESOLVING, LEVEL_UP, MATCH_OVER }
 
 const COL_LETTERS := ["A", "B", "C", "D", "E", "F"]
 const PLAYER_NAMES := ["P1", "P2", "P3", "P4"]
+const ACQUIRABLE := [ActionKind.HEAL, ActionKind.FLYING_KICK, ActionKind.FROST_RING, ActionKind.FIREBALL, ActionKind.WINDWALL]
+const CLOCKWISE := [
+	Vector2i(0, -1), Vector2i(1, -1), Vector2i(1, 0), Vector2i(1, 1),
+	Vector2i(0, 1), Vector2i(-1, 1), Vector2i(-1, 0), Vector2i(-1, -1),
+]
 
 const DIR_N := Vector2i(0, -1)
 const DIR_S := Vector2i(0, 1)
@@ -118,23 +129,97 @@ static func kind_name(kind: ActionKind) -> String:
 			return "Shuriken"
 		ActionKind.PUNCH:
 			return "Punch"
+		ActionKind.HEAL:
+			return "Heal"
+		ActionKind.FLYING_KICK:
+			return "Flying Kick"
+		ActionKind.FROST_RING:
+			return "Frost Ring"
+		ActionKind.FIREBALL:
+			return "Fireball"
+		ActionKind.WINDWALL:
+			return "Windwall"
+		_:
+			return "?"
+
+
+static func kind_letter(kind: ActionKind) -> String:
+	match kind:
+		ActionKind.MOVE:
+			return "M"
+		ActionKind.SHURIKEN:
+			return "S"
+		ActionKind.PUNCH:
+			return "P"
+		ActionKind.HEAL:
+			return "H"
+		ActionKind.FLYING_KICK:
+			return "K"
+		ActionKind.FROST_RING:
+			return "R"
+		ActionKind.FIREBALL:
+			return "F"
+		ActionKind.WINDWALL:
+			return "W"
 		_:
 			return "?"
 
 
 static func speed_of(kind: ActionKind) -> SpeedTier:
 	match kind:
-		ActionKind.MOVE:
+		ActionKind.MOVE, ActionKind.WINDWALL:
 			return SpeedTier.INSTANT
-		ActionKind.SHURIKEN:
+		ActionKind.SHURIKEN, ActionKind.HEAL:
 			return SpeedTier.NORMAL
-		ActionKind.PUNCH:
-			return SpeedTier.SLOW
 		_:
 			return SpeedTier.SLOW
 
 
-static func make_action(kind: ActionKind, dir: Vector2i) -> Dictionary:
+static func is_projectile(kind: ActionKind) -> bool:
+	return kind == ActionKind.SHURIKEN or kind == ActionKind.FIREBALL
+
+
+static func is_unlimited(kind: ActionKind) -> bool:
+	return kind == ActionKind.MOVE
+
+
+static func needs_aim(kind: ActionKind) -> bool:
+	return kind != ActionKind.HEAL and kind != ActionKind.FROST_RING
+
+
+static func projectile_damage(kind: ActionKind) -> int:
+	match kind:
+		ActionKind.FIREBALL:
+			return FIREBALL_DAMAGE
+		_:
+			return SHURIKEN_DAMAGE
+
+
+static func projectile_splash(kind: ActionKind) -> int:
+	return FIREBALL_SPLASH if kind == ActionKind.FIREBALL else 0
+
+
+static func adjacent_dirs(dir: Vector2i) -> Array[Vector2i]:
+	var i := CLOCKWISE.find(dir)
+	if i < 0:
+		return []
+	return [CLOCKWISE[(i + 7) % 8], CLOCKWISE[(i + 1) % 8]]
+
+
+static func neighbors_8(pos: Vector2i) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	for d in CLOCKWISE:
+		var n: Vector2i = pos + d
+		if in_bounds(n):
+			out.append(n)
+	return out
+
+
+static func chebyshev(a: Vector2i, b: Vector2i) -> int:
+	return maxi(absi(a.x - b.x), absi(a.y - b.y))
+
+
+static func make_action(kind: ActionKind, dir: Vector2i = Vector2i.ZERO) -> Dictionary:
 	return {"kind": kind, "dir": dir}
 
 
@@ -150,13 +235,21 @@ var log_lines: PackedStringArray = PackedStringArray()
 var log_entries: Array[Dictionary] = []
 var last_center_occupants: PackedStringArray = PackedStringArray()
 var winners: Array[int] = [] ## empty while match running
+var xp: Array[int] = []
+var owned: Array = [] ## player -> Array of ActionKind
+var damaged_this_round: Array[bool] = []
+var windwall_incoming: Array = [] ## player -> Array[Vector2i]
+var rng := RandomNumberGenerator.new()
+var level_queue: Array[int] = []
+var level_offers: Array = []
+var leveling_player: int = -1
 
 var at_slot_boundary: bool = false
 var awaiting_cleanup: bool = false
-var tier_kind: int = -1 ## 0 Move, 1 Shuriken, 2 Punch, -1 none
+var current_speed: int = -1
 var action_queue: Array[int] = []
-var attack_plan: Array[Dictionary] = []
 var last_fx: Dictionary = {}
+var auto_pick_level_ups := false
 
 
 func _init() -> void:
@@ -173,12 +266,24 @@ func reset_match() -> void:
 	log_lines.clear()
 	log_entries.clear()
 	last_center_occupants.clear()
+	xp.clear()
+	owned.clear()
+	damaged_this_round.clear()
+	windwall_incoming.clear()
+	level_queue.clear()
+	level_offers.clear()
+	leveling_player = -1
 	_reset_step_state()
+	rng.randomize()
 	for i in PLAYER_COUNT:
 		hp.append(START_HP)
 		positions.append(START_POSITIONS[i])
 		alive.append(true)
 		priority.append(i)
+		xp.append(0)
+		owned.append([ActionKind.MOVE, ActionKind.SHURIKEN, ActionKind.PUNCH])
+		damaged_this_round.append(false)
+		windwall_incoming.append([])
 	round_index = 1
 	phase = Phase.DECLARE
 	current_slot = 0
@@ -188,10 +293,12 @@ func reset_match() -> void:
 func _reset_step_state() -> void:
 	at_slot_boundary = false
 	awaiting_cleanup = false
-	tier_kind = -1
+	current_speed = -1
 	action_queue.clear()
-	attack_plan.clear()
 	last_fx = {}
+	for i in PLAYER_COUNT:
+		if i < windwall_incoming.size():
+			windwall_incoming[i] = []
 
 
 func living_ids() -> Array[int]:
@@ -211,6 +318,18 @@ func player_at(pos: Vector2i) -> int:
 	return -1
 
 
+func owns(player_id: int, kind: ActionKind) -> bool:
+	return owned[player_id].has(kind)
+
+
+func unowned_acquirable(player_id: int) -> Array:
+	var pool: Array = []
+	for kind in ACQUIRABLE:
+		if not owns(player_id, kind):
+			pool.append(kind)
+	return pool
+
+
 func submit_program(player_id: int, actions: Array) -> String:
 	if phase != Phase.DECLARE:
 		return "Not in declare phase."
@@ -218,10 +337,18 @@ func submit_program(player_id: int, actions: Array) -> String:
 		return "That player cannot declare."
 	if actions.size() != SLOTS:
 		return "Program must have exactly 3 actions."
+	var used: Dictionary = {}
 	for a in actions:
 		var err := validate_action(a)
 		if err != "":
 			return err
+		var kind: ActionKind = a.kind
+		if not owns(player_id, kind):
+			return "You don't have %s yet." % kind_name(kind)
+		if not is_unlimited(kind):
+			if used.has(kind):
+				return "%s can only be used once per round." % kind_name(kind)
+			used[kind] = true
 	programs[player_id] = actions.duplicate(true)
 	return ""
 
@@ -238,6 +365,8 @@ func begin_reveal() -> void:
 		return
 	phase = Phase.REVEAL
 	_reset_step_state()
+	for i in PLAYER_COUNT:
+		damaged_this_round[i] = false
 	_log("--- Round %d reveal ---" % round_index, -1)
 	for id in living_ids():
 		_log("%s: %s" % [PLAYER_NAMES[id], _program_text(programs[id])], -1)
@@ -246,6 +375,8 @@ func begin_reveal() -> void:
 func resolve_stage() -> String:
 	if phase == Phase.REVEAL:
 		return "reveal"
+	if phase == Phase.LEVEL_UP:
+		return "level_up"
 	if phase != Phase.RESOLVING:
 		return "idle"
 	if awaiting_cleanup:
@@ -268,12 +399,14 @@ func next_prompt() -> String:
 			if left > 0:
 				return "Next — Slot %d  (%d more this slot)" % [current_slot + 1, left]
 			return "Next — Slot %d" % (current_slot + 1)
+		"level_up":
+			return "Level up"
 		_:
 			return "Next"
 
 
 func resolve_next_action() -> Dictionary:
-	if phase == Phase.DECLARE or phase == Phase.MATCH_OVER:
+	if phase == Phase.DECLARE or phase == Phase.MATCH_OVER or phase == Phase.LEVEL_UP:
 		return {}
 	if phase == Phase.REVEAL:
 		phase = Phase.RESOLVING
@@ -297,8 +430,19 @@ func resolve_remaining_slots() -> void:
 	while phase == Phase.REVEAL or phase == Phase.RESOLVING:
 		resolve_next_action()
 		guard += 1
-		if guard > 200:
+		if guard > 400:
 			push_error("Resolution did not terminate.")
+			break
+	if auto_pick_level_ups:
+		_auto_resolve_level_ups()
+
+
+func _auto_resolve_level_ups() -> void:
+	var guard := 0
+	while phase == Phase.LEVEL_UP and not level_offers.is_empty():
+		choose_level_up(level_offers[0])
+		guard += 1
+		if guard > 20:
 			break
 
 
@@ -307,61 +451,54 @@ func play_programmed_round(by_player: Dictionary) -> void:
 	programs.clear()
 	phase = Phase.DECLARE
 	_reset_step_state()
+	auto_pick_level_ups = true
 	for id in by_player.keys():
 		var err := submit_program(int(id), by_player[id])
 		assert(err == "", err)
 	begin_reveal()
 	resolve_remaining_slots()
+	auto_pick_level_ups = false
 
 
 func _open_slot(slot: int) -> void:
 	current_slot = slot
-	tier_kind = -1
+	current_speed = -1
 	action_queue.clear()
-	attack_plan.clear()
+	for i in PLAYER_COUNT:
+		windwall_incoming[i] = []
 	_log("Slot %d:" % (slot + 1), slot)
-	for kind in [ActionKind.MOVE, ActionKind.SHURIKEN, ActionKind.PUNCH]:
-		if _load_tier(kind):
+	for speed in [SpeedTier.INSTANT, SpeedTier.NORMAL, SpeedTier.SLOW]:
+		if _load_speed(speed):
 			return
 
 
-func _load_tier(kind: ActionKind) -> bool:
-	var actors := _actors_for(current_slot, kind)
+func _load_speed(speed: SpeedTier) -> bool:
+	var actors: Array[int] = []
+	for id in priority:
+		if not alive[id] or not programs.has(id):
+			continue
+		var kind: ActionKind = programs[id][current_slot].kind
+		if speed_of(kind) == speed:
+			actors.append(id)
 	if actors.is_empty():
 		return false
 	action_queue = actors
-	attack_plan.clear()
-	if kind == ActionKind.MOVE:
-		tier_kind = 0
-	elif kind == ActionKind.SHURIKEN:
-		tier_kind = 1
-		for id in actors:
-			attack_plan.append(_plan_attack(id, kind, SHURIKEN_DAMAGE))
-	else:
-		tier_kind = 2
-		for id in actors:
-			attack_plan.append(_plan_attack(id, kind, PUNCH_DAMAGE))
+	current_speed = int(speed)
 	return true
 
 
 func _step_action() -> Dictionary:
 	if action_queue.is_empty():
-		_close_current_tier_and_advance()
+		_close_speed_and_advance()
 		if action_queue.is_empty():
 			last_fx = _slot_pause_fx()
 			return last_fx
-	var fx: Dictionary
-	if tier_kind == 0:
-		var mover: int = action_queue.pop_front()
-		fx = _try_move(mover, programs[mover][current_slot].dir)
-	else:
-		var plan: Dictionary = attack_plan.pop_front()
-		action_queue.pop_front()
-		fx = _apply_planned_attack(plan)
+	var actor: int = action_queue.pop_front()
+	var fx: Dictionary = _execute(actor, programs[actor][current_slot])
 	fx["slot"] = current_slot
 	fx["log_index"] = log_entries.size() - 1
 	if action_queue.is_empty():
-		_close_current_tier_and_advance()
+		_close_speed_and_advance()
 	fx["more_in_slot"] = not action_queue.is_empty() and not at_slot_boundary and not awaiting_cleanup
 	fx["at_slot_boundary"] = at_slot_boundary
 	fx["awaiting_cleanup"] = awaiting_cleanup
@@ -369,16 +506,13 @@ func _step_action() -> Dictionary:
 	return fx
 
 
-func _close_current_tier_and_advance() -> void:
-	if tier_kind == 1 or tier_kind == 2:
-		_eliminate_downed()
-	var start := tier_kind + 1
-	tier_kind = -1
+func _close_speed_and_advance() -> void:
+	_eliminate_downed()
+	var start := current_speed + 1
+	current_speed = -1
 	action_queue.clear()
-	attack_plan.clear()
 	for k in range(maxi(start, 0), 3):
-		var kind: ActionKind = [ActionKind.MOVE, ActionKind.SHURIKEN, ActionKind.PUNCH][k]
-		if _load_tier(kind):
+		if _load_speed(k as SpeedTier):
 			return
 	if current_slot >= SLOTS - 1:
 		awaiting_cleanup = true
@@ -397,6 +531,7 @@ func _slot_pause_fx() -> Dictionary:
 
 func _cleanup_round() -> void:
 	_record_center()
+	_award_xp()
 	var living := living_ids()
 	if living.size() <= 1:
 		winners = living.duplicate()
@@ -410,10 +545,69 @@ func _cleanup_round() -> void:
 	_rotate_priority()
 	programs.clear()
 	round_index += 1
-	phase = Phase.DECLARE
 	current_slot = 0
 	_log("End of round. Center: %s. Next priority %s." % [_center_text(), _priority_text()], -1)
 	_reset_step_state()
+	if not level_queue.is_empty():
+		_present_next_level()
+	else:
+		phase = Phase.DECLARE
+
+
+func _award_xp() -> void:
+	level_queue.clear()
+	for id in living_ids():
+		var gained := 1
+		var why: PackedStringArray = PackedStringArray(["alive"])
+		if damaged_this_round[id]:
+			gained += 1
+			why.append("damaged")
+		if is_center(positions[id]):
+			gained += 1
+			why.append("center")
+		var before := xp[id]
+		xp[id] += gained
+		_log("  %s +%d XP (%s) → %d." % [PLAYER_NAMES[id], gained, ", ".join(why), xp[id]], -1)
+		var before_lv := int(before / XP_THRESHOLD)
+		var after_lv := int(xp[id] / XP_THRESHOLD)
+		if after_lv > before_lv and not unowned_acquirable(id).is_empty():
+			level_queue.append(id)
+
+
+func _present_next_level() -> void:
+	while not level_queue.is_empty():
+		var id: int = level_queue.pop_front()
+		if not alive[id]:
+			continue
+		var pool: Array = unowned_acquirable(id)
+		if pool.is_empty():
+			continue
+		for i in range(pool.size() - 1, 0, -1):
+			var j := rng.randi_range(0, i)
+			var tmp = pool[i]
+			pool[i] = pool[j]
+			pool[j] = tmp
+		leveling_player = id
+		level_offers = pool.slice(0, mini(3, pool.size()))
+		phase = Phase.LEVEL_UP
+		_log("%s levels up — choose an ability." % PLAYER_NAMES[id], -1)
+		return
+	leveling_player = -1
+	level_offers.clear()
+	phase = Phase.DECLARE
+
+
+func choose_level_up(kind: ActionKind) -> String:
+	if phase != Phase.LEVEL_UP:
+		return "Not leveling up."
+	if not kind in level_offers:
+		return "That ability is not on offer."
+	if owns(leveling_player, kind):
+		return "Already owned."
+	owned[leveling_player].append(kind)
+	_log("%s acquired %s." % [PLAYER_NAMES[leveling_player], kind_name(kind)], -1)
+	_present_next_level()
+	return ""
 
 
 func _rotate_priority() -> void:
@@ -444,19 +638,31 @@ func declare_preview(player_id: int, slots: Array) -> Dictionary:
 		var to := pos
 		var tiles: Array[Vector2i] = []
 		var hit := -1
-		if kind == ActionKind.MOVE:
-			var dest := pos + dir
-			if in_bounds(dest):
-				to = dest
-				pos = dest
-		elif kind == ActionKind.SHURIKEN:
-			var traced := _preview_ray(from, dir, COLS + ROWS, player_id)
-			tiles = traced.tiles
-			hit = traced.target
-		else:
-			var traced := _preview_ray(from, dir, 1, player_id)
-			tiles = traced.tiles
-			hit = traced.target
+		match kind:
+			ActionKind.MOVE, ActionKind.FLYING_KICK:
+				var dest := pos + dir
+				if in_bounds(dest):
+					to = dest
+					pos = dest
+				if kind == ActionKind.FLYING_KICK:
+					var beyond := pos + dir
+					if in_bounds(beyond):
+						tiles.append(beyond)
+						hit = player_at(beyond)
+						if hit == player_id:
+							hit = -1
+			ActionKind.SHURIKEN, ActionKind.FIREBALL:
+				var traced := _preview_ray(from, dir, COLS + ROWS, player_id)
+				tiles = traced.tiles
+				hit = traced.target
+			ActionKind.PUNCH, ActionKind.WINDWALL:
+				var traced2 := _preview_ray(from, dir, 1, player_id)
+				tiles = traced2.tiles
+				hit = traced2.target
+			ActionKind.FROST_RING:
+				tiles = neighbors_8(from)
+			ActionKind.HEAL:
+				pass
 		steps.append({
 			"slot": i,
 			"kind": kind,
@@ -488,10 +694,12 @@ func _preview_ray(start: Vector2i, dir: Vector2i, max_range: int, ignore_id: int
 
 
 func validate_action(action: Dictionary) -> String:
-	if not action.has("kind") or not action.has("dir"):
-		return "Action needs kind and dir."
+	if not action.has("kind"):
+		return "Action needs kind."
 	var kind: ActionKind = action.kind
-	var dir: Vector2i = action.dir
+	var dir: Vector2i = action.get("dir", Vector2i.ZERO)
+	if not needs_aim(kind):
+		return ""
 	if dir == Vector2i.ZERO:
 		return "Direction required."
 	if kind == ActionKind.MOVE:
@@ -502,20 +710,31 @@ func validate_action(action: Dictionary) -> String:
 	return ""
 
 
-func _actors_for(slot: int, kind: ActionKind) -> Array[int]:
-	var actors: Array[int] = []
-	for id in priority:
-		if not alive[id]:
-			continue
-		if not programs.has(id):
-			continue
-		var action: Dictionary = programs[id][slot]
-		if action.kind == kind:
-			actors.append(id)
-	return actors
+func _execute(actor: int, action: Dictionary) -> Dictionary:
+	if not alive[actor]:
+		return {"kind": "skip", "actor": actor}
+	var kind: ActionKind = action.kind
+	var dir: Vector2i = action.get("dir", Vector2i.ZERO)
+	match kind:
+		ActionKind.MOVE:
+			return _try_move(actor, dir, "Move")
+		ActionKind.WINDWALL:
+			return _apply_windwall(actor, dir)
+		ActionKind.HEAL:
+			return _apply_heal(actor)
+		ActionKind.SHURIKEN, ActionKind.FIREBALL:
+			return _fire_projectile(actor, positions[actor], dir, kind, 0)
+		ActionKind.PUNCH:
+			return _apply_melee(actor, dir, PUNCH_DAMAGE, "punch")
+		ActionKind.FROST_RING:
+			return _apply_frost(actor)
+		ActionKind.FLYING_KICK:
+			return _apply_flying_kick(actor, dir)
+		_:
+			return {"kind": "skip", "actor": actor}
 
 
-func _try_move(mover: int, dir: Vector2i) -> Dictionary:
+func _try_move(mover: int, dir: Vector2i, verb: String = "Move") -> Dictionary:
 	var from: Vector2i = positions[mover]
 	var dest := from + dir
 	var fx := {
@@ -529,14 +748,14 @@ func _try_move(mover: int, dir: Vector2i) -> Dictionary:
 	}
 	if not in_bounds(dest):
 		fx["segments"] = [{"player": mover, "from": from, "to": dest}]
-		_log("  %s Move %s into wall — fail." % [PLAYER_NAMES[mover], dir_name(dir)])
+		_log("  %s %s %s into wall — fail." % [PLAYER_NAMES[mover], verb, dir_name(dir)])
 		return fx
 	var occupant := player_at(dest)
 	if occupant < 0:
 		positions[mover] = dest
 		fx["success"] = true
 		fx["segments"] = [{"player": mover, "from": from, "to": dest}]
-		_log("  %s Move %s to %s." % [PLAYER_NAMES[mover], dir_name(dir), tile_name(dest)])
+		_log("  %s %s %s to %s." % [PLAYER_NAMES[mover], verb, dir_name(dir), tile_name(dest)])
 		return fx
 	var chain: Array[int] = [mover]
 	var cursor := dest
@@ -552,7 +771,7 @@ func _try_move(mover: int, dir: Vector2i) -> Dictionary:
 				segs.append({"player": pid, "from": positions[pid], "to": positions[pid] + dir})
 			fx["segments"] = segs
 			fx["blocked_at"] = cursor
-			_log("  %s Move %s push chain hits wall — fail." % [PLAYER_NAMES[mover], dir_name(dir)])
+			_log("  %s %s %s push chain hits wall — fail." % [PLAYER_NAMES[mover], verb, dir_name(dir)])
 			return fx
 	var segs_ok: Array = []
 	for pid in chain:
@@ -566,73 +785,233 @@ func _try_move(mover: int, dir: Vector2i) -> Dictionary:
 		var pid: int = chain[i]
 		names.append("%s→%s" % [PLAYER_NAMES[pid], tile_name(positions[pid])])
 	_log(
-		"  %s Move %s to %s, push %s."
-		% [PLAYER_NAMES[mover], dir_name(dir), tile_name(positions[mover]), ", ".join(names)]
+		"  %s %s %s to %s, push %s."
+		% [PLAYER_NAMES[mover], verb, dir_name(dir), tile_name(positions[mover]), ", ".join(names)]
 	)
 	return fx
 
 
-func _plan_attack(from_id: int, kind: ActionKind, damage: int) -> Dictionary:
-	var dir: Vector2i = programs[from_id][current_slot].dir
-	var max_range := COLS + ROWS if kind == ActionKind.SHURIKEN else 1
-	var traced := _trace_ray(from_id, dir, max_range)
+func _apply_windwall(actor: int, dir: Vector2i) -> Dictionary:
+	var cover: Array[Vector2i] = [dir]
+	for adj in adjacent_dirs(dir):
+		cover.append(adj)
+	windwall_incoming[actor] = cover
+	var names: PackedStringArray = PackedStringArray()
+	for d in cover:
+		names.append(dir_name(d))
+	_log("  %s Windwall covers incoming %s." % [PLAYER_NAMES[actor], ", ".join(names)])
 	return {
-		"from": from_id,
-		"kind": kind,
+		"kind": "windwall",
+		"actor": actor,
 		"dir": dir,
-		"damage": damage,
-		"target": traced.target,
-		"tiles": traced.tiles,
-		"origin": positions[from_id],
+		"origin": positions[actor],
+		"cover": cover,
+		"success": true,
 	}
 
 
-func _apply_planned_attack(plan: Dictionary) -> Dictionary:
-	var kind: ActionKind = plan.kind
-	var label := kind_name(kind)
+func _apply_heal(actor: int) -> Dictionary:
+	var before := hp[actor]
+	hp[actor] = mini(START_HP, hp[actor] + HEAL_AMOUNT)
+	var gained := hp[actor] - before
+	_log("  %s Heal restores %d (%d HP)." % [PLAYER_NAMES[actor], gained, hp[actor]])
+	return {
+		"kind": "heal",
+		"actor": actor,
+		"origin": positions[actor],
+		"healed": gained,
+		"success": gained > 0,
+	}
+
+
+func _apply_frost(actor: int) -> Dictionary:
+	var tiles := neighbors_8(positions[actor])
+	var hits: Array[int] = []
+	for t in tiles:
+		var who := player_at(t)
+		if who >= 0:
+			_deal_damage(who, FROST_DAMAGE)
+			hits.append(who)
+	if hits.is_empty():
+		_log("  %s Frost Ring — no one adjacent." % PLAYER_NAMES[actor])
+	else:
+		var names: PackedStringArray = PackedStringArray()
+		for id in hits:
+			names.append("%s (%d HP)" % [PLAYER_NAMES[id], hp[id]])
+		_log("  %s Frost Ring hits %s." % [PLAYER_NAMES[actor], ", ".join(names)])
+	return {
+		"kind": "frost",
+		"actor": actor,
+		"origin": positions[actor],
+		"tiles": tiles,
+		"hits": hits,
+		"damage": FROST_DAMAGE,
+		"success": not hits.is_empty(),
+	}
+
+
+func _apply_melee(actor: int, dir: Vector2i, damage: int, fx_kind: String) -> Dictionary:
+	var origin: Vector2i = positions[actor]
+	var dest := origin + dir
+	var target := player_at(dest) if in_bounds(dest) else -1
+	var tiles: Array[Vector2i] = []
+	if in_bounds(dest):
+		tiles.append(dest)
 	var fx := {
-		"kind": "shuriken" if kind == ActionKind.SHURIKEN else "punch",
-		"actor": plan.from,
-		"dir": plan.dir,
-		"origin": plan.origin,
-		"tiles": plan.tiles,
-		"hit_player": plan.target,
-		"damage": plan.damage,
-		"success": plan.target >= 0,
+		"kind": fx_kind,
+		"actor": actor,
+		"dir": dir,
+		"origin": origin,
+		"tiles": tiles,
+		"hit_player": target,
+		"damage": damage,
+		"success": target >= 0,
 	}
-	if plan.target < 0:
-		_log("  %s %s %s — whiff." % [PLAYER_NAMES[plan.from], label, dir_name(plan.dir)])
+	if target < 0:
+		_log("  %s %s %s — whiff." % [PLAYER_NAMES[actor], kind_name(_kind_from_fx(fx_kind)), dir_name(dir)])
 		return fx
-	var target: int = plan.target
-	hp[target] -= plan.damage
+	_deal_damage(target, damage)
 	_log(
 		"  %s %s %s hits %s for %d (%d HP)."
-		% [
-			PLAYER_NAMES[plan.from],
-			label,
-			dir_name(plan.dir),
-			PLAYER_NAMES[target],
-			plan.damage,
-			hp[target],
-		]
+		% [PLAYER_NAMES[actor], kind_name(_kind_from_fx(fx_kind)), dir_name(dir), PLAYER_NAMES[target], damage, hp[target]]
 	)
 	return fx
 
 
-func _trace_ray(from_id: int, dir: Vector2i, max_range: int) -> Dictionary:
+func _kind_from_fx(fx_kind: String) -> ActionKind:
+	match fx_kind:
+		"punch":
+			return ActionKind.PUNCH
+		"kick":
+			return ActionKind.FLYING_KICK
+		_:
+			return ActionKind.PUNCH
+
+
+func _apply_flying_kick(actor: int, dir: Vector2i) -> Dictionary:
+	var move_fx := _try_move(actor, dir, "Flying Kick")
+	var origin: Vector2i = positions[actor]
+	var dest := origin + dir
+	var target := player_at(dest) if in_bounds(dest) else -1
 	var tiles: Array[Vector2i] = []
-	var cursor := positions[from_id]
-	var target := -1
+	if in_bounds(dest):
+		tiles.append(dest)
+	if target >= 0:
+		_deal_damage(target, FLYING_KICK_DAMAGE)
+		_log(
+			"  %s Flying Kick strikes %s for %d (%d HP)."
+			% [PLAYER_NAMES[actor], PLAYER_NAMES[target], FLYING_KICK_DAMAGE, hp[target]]
+		)
+	move_fx["kind"] = "kick"
+	move_fx["hit_player"] = target
+	move_fx["damage"] = FLYING_KICK_DAMAGE
+	move_fx["tiles"] = tiles
+	move_fx["origin"] = origin
+	return move_fx
+
+
+func _blocks_projectile(player_id: int, travel: Vector2i) -> bool:
+	var incoming: Vector2i = -travel
+	var cover: Array = windwall_incoming[player_id]
+	return incoming in cover
+
+
+func _trace_ray_from(origin: Vector2i, dir: Vector2i, max_range: int = COLS + ROWS) -> Dictionary:
+	var tiles: Array[Vector2i] = []
+	var cursor := origin
 	for _i in max_range:
 		cursor += dir
 		if not in_bounds(cursor):
-			break
+			return {
+				"target": -1,
+				"tiles": tiles,
+				"wall": true,
+				"wall_tile": cursor,
+				"stop": cursor - dir,
+			}
 		tiles.append(cursor)
 		var who := player_at(cursor)
 		if who >= 0:
-			target = who
-			break
-	return {"target": target, "tiles": tiles}
+			return {
+				"target": who,
+				"tiles": tiles,
+				"wall": false,
+				"wall_tile": cursor,
+				"stop": cursor,
+			}
+	return {
+		"target": -1,
+		"tiles": tiles,
+		"wall": false,
+		"wall_tile": cursor,
+		"stop": cursor,
+	}
+
+
+func _fire_projectile(actor: int, origin: Vector2i, dir: Vector2i, kind: ActionKind, bounce: int) -> Dictionary:
+	var dmg := projectile_damage(kind)
+	var splash := projectile_splash(kind)
+	var traced := _trace_ray_from(origin, dir)
+	var fx_name := "fireball" if kind == ActionKind.FIREBALL else "shuriken"
+	if bounce > 12:
+		_log("  Projectile fizzles after too many reflections.")
+		return {
+			"kind": fx_name,
+			"actor": actor,
+			"dir": dir,
+			"origin": origin,
+			"tiles": [],
+			"hit_player": -1,
+			"damage": dmg,
+			"success": false,
+		}
+	var target: int = traced.target
+	if target >= 0 and _blocks_projectile(target, dir):
+		_log(
+			"  %s %s blocked by %s Windwall — reflected %s."
+			% [PLAYER_NAMES[actor], kind_name(kind), PLAYER_NAMES[target], dir_name(-dir)]
+		)
+		return _fire_projectile(target, positions[target], -dir, kind, bounce + 1)
+	var splash_hits: Array[int] = []
+	if target >= 0:
+		_deal_damage(target, dmg)
+		_log(
+			"  %s %s %s hits %s for %d (%d HP)."
+			% [PLAYER_NAMES[actor], kind_name(kind), dir_name(dir), PLAYER_NAMES[target], dmg, hp[target]]
+		)
+	else:
+		_log("  %s %s %s — whiff." % [PLAYER_NAMES[actor], kind_name(kind), dir_name(dir)])
+	if splash > 0:
+		var center: Vector2i = traced.wall_tile if traced.wall else traced.stop
+		for id in living_ids():
+			if id == target:
+				continue
+			if chebyshev(positions[id], center) <= 1:
+				_deal_damage(id, splash)
+				splash_hits.append(id)
+		if not splash_hits.is_empty():
+			var names: PackedStringArray = PackedStringArray()
+			for id in splash_hits:
+				names.append("%s (%d HP)" % [PLAYER_NAMES[id], hp[id]])
+			_log("  %s splash hits %s." % [kind_name(kind), ", ".join(names)])
+	return {
+		"kind": fx_name,
+		"actor": actor,
+		"dir": dir,
+		"origin": origin,
+		"tiles": traced.tiles,
+		"hit_player": target,
+		"damage": dmg,
+		"splash_hits": splash_hits,
+		"success": target >= 0 or not splash_hits.is_empty(),
+	}
+
+
+func _deal_damage(target: int, amount: int) -> void:
+	if not alive[target] or amount <= 0:
+		return
+	hp[target] -= amount
+	damaged_this_round[target] = true
 
 
 func _eliminate_downed() -> void:
@@ -674,7 +1053,10 @@ func _priority_text() -> String:
 func _program_text(actions: Array) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	for a in actions:
-		parts.append("%s %s" % [kind_name(a.kind), dir_name(a.dir)])
+		if needs_aim(a.kind) and a.dir != Vector2i.ZERO:
+			parts.append("%s %s" % [kind_name(a.kind), dir_name(a.dir)])
+		else:
+			parts.append(kind_name(a.kind))
 	return " / ".join(parts)
 
 
@@ -700,4 +1082,5 @@ func clone_snapshot() -> Dictionary:
 		"round_index": round_index,
 		"phase": phase,
 		"winners": winners.duplicate(),
+		"xp": xp.duplicate(),
 	}

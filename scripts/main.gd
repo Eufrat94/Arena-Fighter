@@ -29,6 +29,9 @@ var priority_label: Label
 var next_btn: Button
 var stage_label: Label
 var plan_bar: PlanBar
+var level_panel: VBoxContainer
+var level_title: Label
+var level_choices: VBoxContainer
 var anim_lock := false
 var fx_timer: Timer
 
@@ -81,7 +84,7 @@ func _build_ui() -> void:
 	left.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "v1 core loop  ·  6×6  ·  secret 3-action programs"
+	subtitle.text = "v2  ·  XP & acquired abilities  ·  6×6  ·  secret 3-action programs"
 	subtitle.add_theme_color_override("font_color", Color("8b93a7"))
 	left.add_child(subtitle)
 
@@ -108,6 +111,7 @@ func _build_ui() -> void:
 	board.tile_hovered.connect(_on_tile_hovered)
 	board.move_dropped.connect(_on_move_dropped)
 	board.ability_dropped.connect(_on_ability_dropped)
+	board.ability_clicked.connect(_on_ability_clicked)
 	board.drag_cancelled.connect(_on_drag_cancelled)
 	board.plan_slot_clicked.connect(_clear_slot)
 	board_row.add_child(board)
@@ -152,6 +156,23 @@ func _build_ui() -> void:
 	over_panel.add_child(over_label)
 	over_panel.add_child(_btn("New match", _on_new_match))
 
+	level_panel = VBoxContainer.new()
+	level_panel.add_theme_constant_override("separation", 10)
+	right.add_child(level_panel)
+	level_title = Label.new()
+	level_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	level_title.add_theme_font_size_override("font_size", 20)
+	level_title.add_theme_color_override("font_color", Color("f4a261"))
+	level_panel.add_child(level_title)
+	var level_hint := Label.new()
+	level_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	level_hint.add_theme_color_override("font_color", Color("8b93a7"))
+	level_hint.text = "Pick one ability. It is added permanently to your action set."
+	level_panel.add_child(level_hint)
+	level_choices = VBoxContainer.new()
+	level_choices.add_theme_constant_override("separation", 8)
+	level_panel.add_child(level_choices)
+
 	var log_title := Label.new()
 	log_title.text = "Resolution log"
 	log_title.add_theme_color_override("font_color", Color("d6c7a1"))
@@ -184,7 +205,7 @@ func _fill_declare_panel() -> void:
 	var hint := Label.new()
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", Color("8b93a7"))
-	hint.text = "Pass-and-play follows this round's priority. Drag your token to Move, or drag Shuriken/Punch from the icons beside the board. Click a plan circle (or a ghost on the board) to clear that slot and everything after it."
+	hint.text = "Pass-and-play follows this round's priority. Drag your token to Move (unlimited). Drag an aimed ability from the rail, or click Heal / Frost Ring. Shuriken, Punch, and every acquired ability are once per round. Click a plan circle to clear that slot and everything after it."
 	declare_panel.add_child(hint)
 
 
@@ -228,6 +249,10 @@ func _on_ability_dropped(kind: int, dir: Vector2i) -> void:
 	_queue_action(ArenaMatch.make_action(kind as ArenaMatch.ActionKind, dir))
 
 
+func _on_ability_clicked(kind: int) -> void:
+	_queue_action(ArenaMatch.make_action(kind as ArenaMatch.ActionKind))
+
+
 func _on_drag_cancelled(reason: String) -> void:
 	if reason == "full":
 		draft_label.text = "All 3 slots are set. Click a slot to clear it."
@@ -252,6 +277,15 @@ func _queue_action(action: Dictionary) -> void:
 		draft_label.text = "All 3 slots are set. Click a slot to clear it."
 		_refresh()
 		return
+	var kind: ArenaMatch.ActionKind = action.kind
+	if not game.owns(declaring_player, kind):
+		draft_label.text = "You don't have %s yet." % ArenaMatch.kind_name(kind)
+		return
+	if not ArenaMatch.is_unlimited(kind):
+		for slot in draft:
+			if slot.has("kind") and slot.kind == kind:
+				draft_label.text = "%s can only be used once per round." % ArenaMatch.kind_name(kind)
+				return
 	var err := game.validate_action(action)
 	if err != "":
 		draft_label.text = err
@@ -367,7 +401,7 @@ func _refresh() -> void:
 	phase_label.text = "Round %d  ·  %s" % [game.round_index, _phase_text()]
 	priority_label.text = "Priority: " + game._priority_text()
 	if game.last_center_occupants.is_empty() and game.round_index == 1 and game.phase == ArenaMatch.Phase.DECLARE and game.programs.is_empty():
-		center_label.text = "Center tiles: C3 C4 D3 D4 (display only in v1)"
+		center_label.text = "Center tiles: C3 C4 D3 D4  ·  +1 XP if you end a round there"
 	else:
 		center_label.text = "Center at last cleanup: " + game._center_text()
 	_rebuild_status()
@@ -375,9 +409,14 @@ func _refresh() -> void:
 
 	var declaring := game.phase == ArenaMatch.Phase.DECLARE
 	var resolving := game.phase == ArenaMatch.Phase.REVEAL or game.phase == ArenaMatch.Phase.RESOLVING
+	var leveling := game.phase == ArenaMatch.Phase.LEVEL_UP
 	declare_panel.visible = declaring
 	resolve_panel.visible = resolving
 	over_panel.visible = game.phase == ArenaMatch.Phase.MATCH_OVER
+	if level_panel:
+		level_panel.visible = leveling
+	if leveling:
+		_rebuild_level_choices()
 
 	if declaring:
 		_sync_declare_turn()
@@ -398,7 +437,8 @@ func _refresh() -> void:
 				declaring_player,
 				open < 0,
 				preview.get("steps", []),
-				preview.get("plan_origin", game.positions[declaring_player])
+				preview.get("plan_origin", game.positions[declaring_player]),
+				_draft_used_kinds()
 			)
 	else:
 		if plan_bar:
@@ -417,7 +457,7 @@ func _refresh() -> void:
 			"slot_boundary":
 				lines.append("Slot %d finished. Next begins Slot %d." % [game.current_slot + 1, game.current_slot + 2])
 			"end_of_round":
-				lines.append("Slot 3 finished. Next runs cleanup (center, eliminations, priority).")
+				lines.append("Slot 3 finished. Next awards XP, then cleanup (center, eliminations, priority).")
 			_:
 				lines.append("Resolving…")
 		for id in game.living_ids():
@@ -455,6 +495,8 @@ func _phase_text() -> String:
 					return "Slot %d complete" % (game.current_slot + 1)
 				_:
 					return "Resolve slot %d" % (game.current_slot + 1)
+		ArenaMatch.Phase.LEVEL_UP:
+			return "Level up — %s" % ArenaMatch.PLAYER_NAMES[game.leveling_player]
 		ArenaMatch.Phase.MATCH_OVER:
 			return "Match over"
 		_:
@@ -525,8 +567,60 @@ func _rebuild_status() -> void:
 		var line := Label.new()
 		line.add_theme_color_override("font_color", PLAYER_COLORS[i])
 		if game.alive[i]:
-			line.text = "%s  HP %d  @ %s" % [ArenaMatch.PLAYER_NAMES[i], game.hp[i], ArenaMatch.tile_name(game.positions[i])]
+			line.text = "%s  HP %d  XP %d  @ %s" % [ArenaMatch.PLAYER_NAMES[i], game.hp[i], game.xp[i], ArenaMatch.tile_name(game.positions[i])]
 		else:
 			line.text = "%s  eliminated" % ArenaMatch.PLAYER_NAMES[i]
 			line.add_theme_color_override("font_color", Color("6b7385"))
 		status_box.add_child(line)
+
+
+func _draft_used_kinds() -> Array:
+	var kinds: Array = []
+	for slot in draft:
+		if slot.has("kind"):
+			kinds.append(slot.kind)
+	return kinds
+
+
+func _rebuild_level_choices() -> void:
+	if level_title:
+		level_title.text = "%s — choose an ability" % ArenaMatch.PLAYER_NAMES[game.leveling_player]
+	if level_choices == null:
+		return
+	for child in level_choices.get_children():
+		child.queue_free()
+	for kind in game.level_offers:
+		var k: ArenaMatch.ActionKind = kind
+		var b := Button.new()
+		b.text = "%s  ·  %s" % [ArenaMatch.kind_name(k), _ability_blurb(k)]
+		b.pressed.connect(_on_pick_level.bind(k))
+		level_choices.add_child(b)
+
+
+func _ability_blurb(kind: ArenaMatch.ActionKind) -> String:
+	match kind:
+		ArenaMatch.ActionKind.HEAL:
+			return "Normal · restore 2 HP (cap 20)"
+		ArenaMatch.ActionKind.FLYING_KICK:
+			return "Slow · step 1, then 2 dmg beyond"
+		ArenaMatch.ActionKind.FROST_RING:
+			return "Slow · 1 dmg to all 8 adjacent"
+		ArenaMatch.ActionKind.FIREBALL:
+			return "Slow · ray 3 dmg + 1 splash"
+		ArenaMatch.ActionKind.WINDWALL:
+			return "Instant · reflect projectiles"
+		_:
+			return ""
+
+
+func _on_pick_level(kind: ArenaMatch.ActionKind) -> void:
+	var err := game.choose_level_up(kind)
+	if err != "":
+		return
+	if game.phase == ArenaMatch.Phase.DECLARE:
+		draft_owner = -1
+		declaring_player = _next_undeclared()
+		_reset_draft()
+		draft_owner = declaring_player
+	_refresh()
+

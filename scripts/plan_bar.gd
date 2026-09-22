@@ -94,7 +94,20 @@ func _draw_slot_circle(i: int) -> void:
 				_draw_icon(TEX_SHURIKEN, c, ICON_SIZE)
 			ArenaMatch.ActionKind.PUNCH:
 				_draw_icon(TEX_FIST, c, ICON_SIZE)
-		_draw_dir_arrow(c, dir, Color.WHITE)
+			_:
+				draw_string(
+					ThemeDB.fallback_font,
+					c + Vector2(-8, 8),
+					ArenaMatch.kind_letter(kind),
+					HORIZONTAL_ALIGNMENT_LEFT,
+					-1,
+					22,
+					Color.WHITE
+				)
+		if ArenaMatch.needs_aim(kind):
+			_draw_dir_arrow(c, dir, Color.WHITE)
+		else:
+			pass
 	else:
 		draw_circle(c, R, Color(0.12, 0.14, 0.18, 0.9))
 		draw_arc(c, R, 0.0, TAU, 28, Color(accent.r, accent.g, accent.b, 0.35), 2.0, true)
