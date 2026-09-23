@@ -1,6 +1,7 @@
 extends Control
 
 const PlanBar = preload("res://scripts/plan_bar.gd")
+const CpuPlanner = preload("res://scripts/cpu_planner.gd")
 
 const PLAYER_COLORS := [
 	Color("e85d4c"),
@@ -34,6 +35,9 @@ var level_title: Label
 var level_choices: VBoxContainer
 var anim_lock := false
 var fx_timer: Timer
+var is_cpu: Array[bool] = [false, true, true, true]
+var cpu_pending := false
+var control_checks: Array[CheckBox] = []
 
 
 func _ready() -> void:
@@ -41,6 +45,7 @@ func _ready() -> void:
 	_build_ui()
 	_reset_draft()
 	_refresh()
+	_kick_cpu()
 
 
 func _build_ui() -> void:
@@ -84,7 +89,7 @@ func _build_ui() -> void:
 	left.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "v2  ·  XP & acquired abilities  ·  6×6  ·  secret 3-action programs"
+	subtitle.text = "v2.1  ·  heuristic CPU  ·  same hidden information as a human"
 	subtitle.add_theme_color_override("font_color", Color("8b93a7"))
 	left.add_child(subtitle)
 
@@ -100,6 +105,23 @@ func _build_ui() -> void:
 	center_label = Label.new()
 	center_label.add_theme_color_override("font_color", Color("9b72cf"))
 	left.add_child(center_label)
+
+	var control_row := HBoxContainer.new()
+	control_row.add_theme_constant_override("separation", 14)
+	left.add_child(control_row)
+	var control_caption := Label.new()
+	control_caption.text = "Seats:"
+	control_caption.add_theme_color_override("font_color", Color("8b93a7"))
+	control_row.add_child(control_caption)
+	control_checks.clear()
+	for i in ArenaMatch.PLAYER_COUNT:
+		var cb := CheckBox.new()
+		cb.text = "%s CPU" % ArenaMatch.PLAYER_NAMES[i]
+		cb.button_pressed = is_cpu[i]
+		cb.add_theme_color_override("font_color", PLAYER_COLORS[i])
+		cb.toggled.connect(_on_cpu_toggled.bind(i))
+		control_row.add_child(cb)
+		control_checks.append(cb)
 
 	var board_row := HBoxContainer.new()
 	board_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -417,29 +439,40 @@ func _refresh() -> void:
 		level_panel.visible = leveling
 	if leveling:
 		_rebuild_level_choices()
+	if leveling or declaring:
+		_kick_cpu()
 
 	if declaring:
 		_sync_declare_turn()
 		handoff_label.add_theme_color_override("font_color", PLAYER_COLORS[declaring_player])
-		handoff_label.text = "Hand the machine to %s — program 3 actions." % ArenaMatch.PLAYER_NAMES[declaring_player]
-		var open := _next_open_slot()
-		if open < 0:
-			draft_label.text = "All 3 actions queued. Submit your plan under the board."
+		var cpu_turn := declaring_player >= 0 and is_cpu[declaring_player]
+		if cpu_turn:
+			handoff_label.text = "%s (CPU) is writing a 3-action plan from public board info only." % ArenaMatch.PLAYER_NAMES[declaring_player]
+			draft_label.text = "No peeking — the CPU cannot see unrevealed programs, including yours."
+			if plan_bar:
+				plan_bar.visible = false
+			if board:
+				board.set_declare_context(false, -1, false)
 		else:
-			draft_label.text = "Next empty slot: %d  ·  drag on the board to queue" % (open + 1)
-		if plan_bar:
-			plan_bar.visible = true
-			plan_bar.set_plan(declaring_player, draft, open < 0)
-		if board:
-			var preview: Dictionary = game.declare_preview(declaring_player, draft)
-			board.set_declare_context(
-				true,
-				declaring_player,
-				open < 0,
-				preview.get("steps", []),
-				preview.get("plan_origin", game.positions[declaring_player]),
-				_draft_used_kinds()
-			)
+			handoff_label.text = "Hand the machine to %s — program 3 actions." % ArenaMatch.PLAYER_NAMES[declaring_player]
+			var open := _next_open_slot()
+			if open < 0:
+				draft_label.text = "All 3 actions queued. Submit your plan under the board."
+			else:
+				draft_label.text = "Next empty slot: %d  ·  drag on the board to queue" % (open + 1)
+			if plan_bar:
+				plan_bar.visible = true
+				plan_bar.set_plan(declaring_player, draft, open < 0)
+			if board:
+				var preview: Dictionary = game.declare_preview(declaring_player, draft)
+				board.set_declare_context(
+					true,
+					declaring_player,
+					open < 0,
+					preview.get("steps", []),
+					preview.get("plan_origin", game.positions[declaring_player]),
+					_draft_used_kinds()
+				)
 	else:
 		if plan_bar:
 			plan_bar.visible = false
@@ -567,7 +600,8 @@ func _rebuild_status() -> void:
 		var line := Label.new()
 		line.add_theme_color_override("font_color", PLAYER_COLORS[i])
 		if game.alive[i]:
-			line.text = "%s  HP %d  XP %d  @ %s" % [ArenaMatch.PLAYER_NAMES[i], game.hp[i], game.xp[i], ArenaMatch.tile_name(game.positions[i])]
+			var seat := "CPU" if is_cpu[i] else "human"
+			line.text = "%s  HP %d  XP %d  @ %s  ·  %s" % [ArenaMatch.PLAYER_NAMES[i], game.hp[i], game.xp[i], ArenaMatch.tile_name(game.positions[i]), seat]
 		else:
 			line.text = "%s  eliminated" % ArenaMatch.PLAYER_NAMES[i]
 			line.add_theme_color_override("font_color", Color("6b7385"))
@@ -584,11 +618,14 @@ func _draft_used_kinds() -> Array:
 
 func _rebuild_level_choices() -> void:
 	if level_title:
-		level_title.text = "%s — choose an ability" % ArenaMatch.PLAYER_NAMES[game.leveling_player]
+		var seat := "CPU" if (game.leveling_player >= 0 and is_cpu[game.leveling_player]) else "you"
+		level_title.text = "%s (%s) — choose an ability" % [ArenaMatch.PLAYER_NAMES[game.leveling_player], seat]
 	if level_choices == null:
 		return
 	for child in level_choices.get_children():
 		child.queue_free()
+	if game.leveling_player >= 0 and is_cpu[game.leveling_player]:
+		return
 	for kind in game.level_offers:
 		var k: ArenaMatch.ActionKind = kind
 		var b := Button.new()
@@ -623,4 +660,49 @@ func _on_pick_level(kind: ArenaMatch.ActionKind) -> void:
 		_reset_draft()
 		draft_owner = declaring_player
 	_refresh()
+	_kick_cpu()
+
+
+func _on_cpu_toggled(index: int, on: bool) -> void:
+	is_cpu[index] = on
+	_kick_cpu()
+
+
+func _kick_cpu() -> void:
+	if cpu_pending:
+		return
+	cpu_pending = true
+	call_deferred("_cpu_step")
+
+
+func _cpu_step() -> void:
+	cpu_pending = false
+	if game.phase == ArenaMatch.Phase.LEVEL_UP and game.leveling_player >= 0 and is_cpu[game.leveling_player]:
+		if game.level_offers.is_empty():
+			return
+		_on_pick_level(CpuPlanner.preferred_level_up(game.level_offers))
+		return
+	if game.phase != ArenaMatch.Phase.DECLARE:
+		return
+	if declaring_player < 0 or not is_cpu[declaring_player]:
+		return
+	if game.programs.has(declaring_player):
+		return
+	var planner := CpuPlanner.new()
+	var plan: Array = planner.plan_program(game, declaring_player)
+	var err := game.submit_program(declaring_player, plan)
+	if err != "":
+		err = game.submit_program(declaring_player, _cpu_fallback())
+		if err != "":
+			push_error("CPU could not submit a plan: %s" % err)
+			return
+	_advance_declare()
+
+
+func _cpu_fallback() -> Array:
+	return [
+		ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_N),
+		ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_S),
+		ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_E),
+	]
 

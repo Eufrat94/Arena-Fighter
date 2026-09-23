@@ -1,6 +1,7 @@
 extends SceneTree
 
 const ArenaMatch = preload("res://scripts/arena_match.gd")
+const CpuPlanner = preload("res://scripts/cpu_planner.gd")
 
 var passed := 0
 var failed := 0
@@ -38,6 +39,16 @@ func _run() -> void:
 	_test_frost_ring()
 	_test_fireball_splash()
 	_test_windwall_reflects_projectile()
+	_test_cpu_ignores_hidden_programs()
+	_test_cpu_pokes_when_low_and_safe()
+	_test_cpu_heals_when_threatened_and_low()
+	_test_cpu_retreats_when_adjacent_and_low()
+	_test_cpu_takes_clear_shuriken()
+	_test_cpu_frost_on_cluster()
+	_test_cpu_closes_distance()
+	_test_cpu_predictive_aim()
+	_test_cpu_projects_own_moves()
+	_test_cpu_stand_when_retreat_loops()
 
 
 func expect(cond: bool, msg: String) -> void:
@@ -435,4 +446,143 @@ func _test_windwall_reflects_projectile() -> void:
 	m.positions[1] = Vector2i(2, 3)
 	m.play_programmed_round(filled("R,S N,P N", "W N,S N,P N"))
 	expect(m.hp[1] == 19, "Windwall does not block Frost Ring")
+
+
+func _cpu_plan(m: ArenaMatch, id: int) -> Array:
+	return CpuPlanner.new().plan_program(m, id)
+
+
+func _plan_has(plan: Array, kind: ArenaMatch.ActionKind, dir: Vector2i = Vector2i(-99, -99)) -> bool:
+	for a in plan:
+		if a.kind != kind:
+			continue
+		if dir.x == -99 or a.dir == dir:
+			return true
+	return false
+
+
+func _test_cpu_ignores_hidden_programs() -> void:
+	var m := ArenaMatch.new()
+	m.positions[0] = Vector2i(0, 2) # A3
+	m.positions[1] = Vector2i(4, 2) # E3 in a straight east line
+	# Hidden bait: P2's unrevealed plan leaves the line. A cheating CPU would not throw east.
+	m.programs[1] = prog("M N,M N,M N")
+	var plan: Array = _cpu_plan(m, 0)
+	expect(_plan_has(plan, ArenaMatch.ActionKind.SHURIKEN, ArenaMatch.DIR_E), "CPU throws at the visible line, not at P2's hidden north moves")
+	expect(m.programs[1][0].kind == ArenaMatch.ActionKind.MOVE, "planner must not rewrite other programs")
+
+
+func _test_cpu_pokes_when_low_and_safe() -> void:
+	var m := ArenaMatch.new()
+	m.owned[0].append(ArenaMatch.ActionKind.HEAL)
+	m.hp[0] = 5
+	m.positions[0] = Vector2i(0, 0)
+	m.positions[1] = Vector2i(5, 5)
+	m.positions[2] = Vector2i(5, 4)
+	m.positions[3] = Vector2i(4, 5)
+	var plan: Array = _cpu_plan(m, 0)
+	expect(_plan_has(plan, ArenaMatch.ActionKind.SHURIKEN), "low HP at safe range still takes a ranged poke")
+	expect(not _plan_has(plan, ArenaMatch.ActionKind.HEAL), "Heal is for threatened slots, not a blanket low-HP mode")
+
+
+func _test_cpu_heals_when_threatened_and_low() -> void:
+	var m := ArenaMatch.new()
+	m.owned[0].append(ArenaMatch.ActionKind.HEAL)
+	m.hp[0] = 5
+	m.positions[0] = Vector2i(2, 2)
+	m.positions[1] = Vector2i(3, 2)
+	m.alive[2] = false
+	m.alive[3] = false
+	var plan: Array = _cpu_plan(m, 0)
+	expect(plan[0].kind == ArenaMatch.ActionKind.HEAL, "low HP in melee with no kill shot prefers Heal")
+
+
+func _test_cpu_retreats_when_adjacent_and_low() -> void:
+	var m := ArenaMatch.new()
+	m.hp[0] = 5
+	m.positions[0] = Vector2i(2, 2) # C3 — room to step west
+	m.positions[1] = Vector2i(3, 2) # D3
+	m.alive[2] = false
+	m.alive[3] = false
+	var plan: Array = _cpu_plan(m, 0)
+	expect(plan[0].kind == ArenaMatch.ActionKind.MOVE, "low HP next to a foe with no Heal: move away")
+	expect(plan[0].dir == ArenaMatch.DIR_W, "retreat steps off the threat, not onto it")
+
+
+func _test_cpu_takes_clear_shuriken() -> void:
+	var m := ArenaMatch.new()
+	m.positions[0] = Vector2i(0, 2)
+	m.positions[1] = Vector2i(4, 2)
+	var plan: Array = _cpu_plan(m, 0)
+	expect(_plan_has(plan, ArenaMatch.ActionKind.SHURIKEN, ArenaMatch.DIR_E), "clear east line is a Shuriken")
+
+
+func _test_cpu_frost_on_cluster() -> void:
+	var m := ArenaMatch.new()
+	m.owned[0].append(ArenaMatch.ActionKind.FROST_RING)
+	m.positions[0] = Vector2i(2, 2) # C3
+	m.positions[1] = Vector2i(2, 3) # C4
+	m.positions[2] = Vector2i(3, 2) # D3
+	m.positions[3] = Vector2i(5, 5)
+	var plan: Array = _cpu_plan(m, 0)
+	expect(_plan_has(plan, ArenaMatch.ActionKind.FROST_RING), "two adjacent foes prefer Frost Ring")
+
+
+func _test_cpu_closes_distance() -> void:
+	var m := ArenaMatch.new()
+	m.positions[0] = Vector2i(0, 4) # A5
+	m.positions[1] = Vector2i(5, 0) # F1 — not on a ray
+	m.alive[2] = false
+	m.alive[3] = false
+	var plan: Array = _cpu_plan(m, 0)
+	expect(plan[0].kind == ArenaMatch.ActionKind.MOVE, "no attack line defaults to a Move")
+	var dest: Vector2i = m.positions[0] + plan[0].dir
+	expect(
+		ArenaMatch.chebyshev(dest, m.positions[1]) < ArenaMatch.chebyshev(m.positions[0], m.positions[1]),
+		"approach Move closes on the nearest foe"
+	)
+
+
+func _test_cpu_predictive_aim() -> void:
+	var m := ArenaMatch.new()
+	m.positions[0] = Vector2i(0, 2) # A3
+	m.positions[1] = Vector2i(3, 1) # D2 — not currently on a ray
+	m.last_step_dir[1] = ArenaMatch.DIR_S # would step to D3, on the east line
+	var plan: Array = _cpu_plan(m, 0)
+	expect(_plan_has(plan, ArenaMatch.ActionKind.SHURIKEN, ArenaMatch.DIR_E), "one-tile last-move extrapolation aims the throw")
+
+
+func _test_cpu_projects_own_moves() -> void:
+	var m := ArenaMatch.new()
+	m.positions[0] = Vector2i(0, 2) # A3
+	m.positions[1] = Vector2i(2, 3) # C4 — not on a cardinal/diagonal ray
+	var plan: Array = _cpu_plan(m, 0)
+	expect(plan[0].kind == ArenaMatch.ActionKind.MOVE, "first slot steps in to close punch range")
+	expect(_plan_has(plan, ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_E), "ghost projection steps east toward C4")
+	var origin2: Vector2i = m.declare_preview(0, [plan[0], {}, {}]).plan_origin
+	expect(origin2 == Vector2i(1, 2), "second slot is planned from the ghost tile B3")
+	expect(
+		plan[1].kind == ArenaMatch.ActionKind.PUNCH or plan[1].kind == ArenaMatch.ActionKind.SHURIKEN,
+		"from B3 the CPU uses a now-available attack"
+	)
+
+
+func _test_cpu_stand_when_retreat_loops() -> void:
+	var m := ArenaMatch.new()
+	m.hp[0] = 5
+	m.positions[0] = Vector2i(0, 0) # A1 corner
+	m.positions[1] = Vector2i(1, 0) # B1
+	m.alive[2] = false
+	m.alive[3] = false
+	m.pos_history[0] = [Vector2i(0, 1), Vector2i(0, 0)]
+	m.last_step_dir[0] = ArenaMatch.DIR_N
+	m.owned[0].append(ArenaMatch.ActionKind.WINDWALL)
+	var plan: Array = _cpu_plan(m, 0)
+	expect(plan[0].kind != ArenaMatch.ActionKind.MOVE, "no productive retreat: do not bounce off the corner")
+	expect(
+		plan[0].kind == ArenaMatch.ActionKind.WINDWALL or plan[0].kind == ArenaMatch.ActionKind.PUNCH,
+		"make a stand with Windwall or an attack"
+	)
+
+
 

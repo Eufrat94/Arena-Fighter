@@ -223,6 +223,18 @@ static func make_action(kind: ActionKind, dir: Vector2i = Vector2i.ZERO) -> Dict
 	return {"kind": kind, "dir": dir}
 
 
+## Cardinal or diagonal step from `from` toward `to`, or ZERO if they are not on a ray.
+static func line_dir(from: Vector2i, to: Vector2i) -> Vector2i:
+	var d: Vector2i = to - from
+	if d == Vector2i.ZERO:
+		return Vector2i.ZERO
+	var ax := absi(d.x)
+	var ay := absi(d.y)
+	if ax != 0 and ay != 0 and ax != ay:
+		return Vector2i.ZERO
+	return Vector2i(signi(d.x), signi(d.y))
+
+
 var hp: Array[int] = []
 var positions: Array[Vector2i] = []
 var alive: Array[bool] = []
@@ -250,6 +262,10 @@ var current_speed: int = -1
 var action_queue: Array[int] = []
 var last_fx: Dictionary = {}
 var auto_pick_level_ups := false
+## Last successful one-tile step per player (move or push). Public, observed information.
+var last_step_dir: Array[Vector2i] = []
+## Last two round-end tiles per player. Public. Used to stop retreat oscillation.
+var pos_history: Array = []
 
 
 func _init() -> void:
@@ -273,6 +289,8 @@ func reset_match() -> void:
 	level_queue.clear()
 	level_offers.clear()
 	leveling_player = -1
+	last_step_dir.clear()
+	pos_history.clear()
 	_reset_step_state()
 	rng.randomize()
 	for i in PLAYER_COUNT:
@@ -284,6 +302,8 @@ func reset_match() -> void:
 		owned.append([ActionKind.MOVE, ActionKind.SHURIKEN, ActionKind.PUNCH])
 		damaged_this_round.append(false)
 		windwall_incoming.append([])
+		last_step_dir.append(Vector2i.ZERO)
+		pos_history.append([])
 	round_index = 1
 	phase = Phase.DECLARE
 	current_slot = 0
@@ -530,6 +550,7 @@ func _slot_pause_fx() -> Dictionary:
 
 
 func _cleanup_round() -> void:
+	_record_position_history()
 	_record_center()
 	_award_xp()
 	var living := living_ids()
@@ -677,6 +698,26 @@ func declare_preview(player_id: int, slots: Array) -> Dictionary:
 	return {"plan_origin": plan_origin, "steps": steps}
 
 
+func preview_ray(start: Vector2i, dir: Vector2i, max_range: int, ignore_id: int) -> Dictionary:
+	return _preview_ray(start, dir, max_range, ignore_id)
+
+
+func _note_step(player_id: int, dir: Vector2i) -> void:
+	if player_id >= 0 and player_id < last_step_dir.size():
+		last_step_dir[player_id] = dir
+
+
+func _record_position_history() -> void:
+	for i in PLAYER_COUNT:
+		if i >= pos_history.size():
+			continue
+		var hist: Array = pos_history[i]
+		hist.append(positions[i])
+		while hist.size() > 2:
+			hist.remove_at(0)
+		pos_history[i] = hist
+
+
 func _preview_ray(start: Vector2i, dir: Vector2i, max_range: int, ignore_id: int) -> Dictionary:
 	var tiles: Array[Vector2i] = []
 	var cursor := start
@@ -755,6 +796,7 @@ func _try_move(mover: int, dir: Vector2i, verb: String = "Move") -> Dictionary:
 		positions[mover] = dest
 		fx["success"] = true
 		fx["segments"] = [{"player": mover, "from": from, "to": dest}]
+		_note_step(mover, dir)
 		_log("  %s %s %s to %s." % [PLAYER_NAMES[mover], verb, dir_name(dir), tile_name(dest)])
 		return fx
 	var chain: Array[int] = [mover]
@@ -780,6 +822,8 @@ func _try_move(mover: int, dir: Vector2i, verb: String = "Move") -> Dictionary:
 		positions[chain[i]] = positions[chain[i]] + dir
 	fx["success"] = true
 	fx["segments"] = segs_ok
+	for pid in chain:
+		_note_step(pid, dir)
 	var names: PackedStringArray = PackedStringArray()
 	for i in range(1, chain.size()):
 		var pid: int = chain[i]
