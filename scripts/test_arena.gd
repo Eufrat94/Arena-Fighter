@@ -15,6 +15,7 @@ func _init() -> void:
 
 func _run() -> void:
 	_test_start_positions()
+	_test_pass_stays_put()
 	_test_wall_blocks_move()
 	_test_simple_move()
 	_test_push()
@@ -46,9 +47,11 @@ func _run() -> void:
 	_test_cpu_takes_clear_shuriken()
 	_test_cpu_frost_on_cluster()
 	_test_cpu_closes_distance()
+	_test_cpu_edge_does_not_walk_into_wall()
 	_test_cpu_predictive_aim()
 	_test_cpu_projects_own_moves()
 	_test_cpu_stand_when_retreat_loops()
+	_test_cpu_never_idles()
 
 
 func expect(cond: bool, msg: String) -> void:
@@ -91,8 +94,7 @@ func prog(spec: String) -> Array:
 
 
 func idle() -> Array:
-	# Punch (slow, range 1), then N+S so the round nets no movement when both steps are free.
-	return prog("P N,M N,M S")
+	return [ArenaMatch.make_pass()]
 
 
 func match_with(programs: Dictionary) -> ArenaMatch:
@@ -119,18 +121,28 @@ func _test_start_positions() -> void:
 	expect(ArenaMatch.tile_name(m.positions[0]) == "A5", "tile name A5")
 
 
+func _test_pass_stays_put() -> void:
+	var m := ArenaMatch.new()
+	var start: Vector2i = m.positions[0]
+	m.play_programmed_round(filled("M"))
+	expect(m.positions[0] == start, "pass / stay does not move")
+	expect(m.round_index == 2, "cleanup runs after a single-action turn")
+
+
 func _test_wall_blocks_move() -> void:
-	var m := match_with(filled("M N,M N,M N"))
-	# P1 A5: N three times -> A4, A3, A2
+	var m := ArenaMatch.new()
+	for _i in 3:
+		m.play_programmed_round(filled("M N"))
+	# P1 A5: N three turns -> A4, A3, A2
 	expect(m.positions[0] == Vector2i(0, 1), "P1 walked north to A2")
 	m = ArenaMatch.new()
 	m.positions[1] = Vector2i(1, 0)
-	m.play_programmed_round(filled("S N,M S,M E", "M N,M N,M N"))
+	m.play_programmed_round(filled("M", "M N"))
 	expect(m.positions[1] == Vector2i(1, 0), "P2 north from B1 is wall, stays")
 
 
 func _test_simple_move() -> void:
-	var m := match_with(filled("M E,S N,P N"))
+	var m := match_with(filled("M E"))
 	expect(m.positions[0] == Vector2i(1, 4), "P1 A5 east to B5")
 
 
@@ -138,7 +150,7 @@ func _test_push() -> void:
 	var m := ArenaMatch.new()
 	m.positions[0] = Vector2i(1, 2) # B3
 	m.positions[1] = Vector2i(2, 2) # C3
-	m.play_programmed_round(filled("M E,S N,P N", "S N,M N,M S"))
+	m.play_programmed_round(filled("M E"))
 	expect(m.positions[0] == Vector2i(2, 2), "mover takes C3")
 	expect(m.positions[1] == Vector2i(3, 2), "occupant pushed to D3")
 
@@ -148,7 +160,7 @@ func _test_chain_push() -> void:
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(1, 2) # B3
 	m.positions[2] = Vector2i(2, 2) # C3
-	m.play_programmed_round(filled("M E,S N,P N", "S N,M N,M S", "S N,M N,M S"))
+	m.play_programmed_round(filled("M E"))
 	expect(m.positions[0] == Vector2i(1, 2), "P1 to B3")
 	expect(m.positions[1] == Vector2i(2, 2), "P2 to C3")
 	expect(m.positions[2] == Vector2i(3, 2), "P3 to D3")
@@ -159,7 +171,7 @@ func _test_push_wall_fails_entire_chain() -> void:
 	m.positions[0] = Vector2i(3, 2) # D3
 	m.positions[1] = Vector2i(4, 2) # E3
 	m.positions[2] = Vector2i(5, 2) # F3 against east wall
-	m.play_programmed_round(filled("M E,S N,P N", "S N,M N,M S", "S N,M N,M S"))
+	m.play_programmed_round(filled("M E"))
 	expect(m.positions[0] == Vector2i(3, 2), "chain fail mover stays")
 	expect(m.positions[1] == Vector2i(4, 2), "chain fail mid stays")
 	expect(m.positions[2] == Vector2i(5, 2), "chain fail end stays")
@@ -169,12 +181,12 @@ func _test_shuriken_hit_and_whiff() -> void:
 	var m := ArenaMatch.new()
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(4, 2) # E3
-	m.play_programmed_round(filled("S E,P N,M S", "S W,P N,M N"))
+	m.play_programmed_round(filled("S E", "S W"))
 	expect(m.hp[1] == 18, "P2 took shuriken 2")
 	expect(m.hp[0] == 18, "P1 took return shuriken 2")
 	m = ArenaMatch.new()
 	m.positions[0] = Vector2i(0, 5)
-	m.play_programmed_round(filled("S N,M N,M E"))
+	m.play_programmed_round(filled("S N"))
 	expect(m.hp[1] == 20 and m.hp[2] == 20 and m.hp[3] == 20, "north from A6 whiffs others")
 
 
@@ -182,7 +194,7 @@ func _test_diagonal_shuriken() -> void:
 	var m := ArenaMatch.new()
 	m.positions[0] = Vector2i(2, 3) # C4
 	m.positions[1] = Vector2i(3, 2) # D3  (NE of C4)
-	m.play_programmed_round(filled("S NE,M N,M S", "S N,M N,M E"))
+	m.play_programmed_round(filled("S NE"))
 	expect(m.hp[1] == 18, "diagonal NE from C4 hits D3")
 
 
@@ -190,12 +202,12 @@ func _test_punch_range() -> void:
 	var m := ArenaMatch.new()
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(2, 2) # two tiles east — punch should whiff
-	m.play_programmed_round(filled("P E,S N,M S", "S N,M N,M E"))
+	m.play_programmed_round(filled("P E"))
 	expect(m.hp[1] == 20, "punch range 1 whiffs at distance 2")
 	m = ArenaMatch.new()
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(1, 2)
-	m.play_programmed_round(filled("P E,S N,M S", "S N,M N,M E"))
+	m.play_programmed_round(filled("P E"))
 	expect(m.hp[1] == 16, "adjacent punch deals 4")
 
 
@@ -205,7 +217,7 @@ func _test_speed_order() -> void:
 	var m := ArenaMatch.new()
 	m.positions[0] = Vector2i(1, 2) # B3
 	m.positions[1] = Vector2i(3, 2) # D3
-	m.play_programmed_round(filled("M N,S N,P N", "S W,M N,M S"))
+	m.play_programmed_round(filled("M N", "S W"))
 	expect(m.positions[0] == Vector2i(1, 1), "P1 moved to B2")
 	expect(m.hp[0] == 20, "shuriken resolved after move and missed")
 
@@ -216,7 +228,7 @@ func _test_lower_priority_can_push_after() -> void:
 	m.positions[0] = Vector2i(2, 2) # C3
 	m.positions[1] = Vector2i(4, 2) # E3
 	m.priority = [0, 1, 2, 3]
-	m.play_programmed_round(filled("M E,S N,P N", "M W,S N,P N"))
+	m.play_programmed_round(filled("M E", "M W"))
 	# P1 first: C3 -> D3 empty.
 	# P2: E3 west onto D3, push P1 west to C3, P2 takes D3.
 	expect(m.positions[0] == Vector2i(2, 2), "P1 pushed back to C3")
@@ -224,7 +236,7 @@ func _test_lower_priority_can_push_after() -> void:
 
 
 func _test_priority_rotates_after_round() -> void:
-	var m := match_with(filled("S N,M N,M E"))
+	var m := match_with(filled("S N"))
 	expect(m.priority[0] == 1, "priority rotated to P2 first")
 	expect(m.priority[3] == 0, "P1 now last")
 
@@ -235,7 +247,7 @@ func _test_mutual_ko_same_tier() -> void:
 	m.hp[1] = 4
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(1, 2)
-	m.play_programmed_round(filled("P E,S N,M S", "P W,S N,M S"))
+	m.play_programmed_round(filled("P E", "P W"))
 	expect(not m.alive[0] and not m.alive[1], "both KO in same punch step")
 	expect(m.alive[2] and m.alive[3], "others still up")
 
@@ -245,9 +257,9 @@ func _test_dead_skip_later_slots() -> void:
 	m.hp[1] = 4
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(1, 2)
-	m.play_programmed_round(filled("P E,S E,M S", "S W,M N,P W"))
-	expect(not m.alive[1], "P2 died in slot 1")
-	expect(m.hp[0] == 18, "P2 slot-1 shuriken hit; later punch skipped")
+	m.play_programmed_round(filled("P E", "S W"))
+	expect(not m.alive[1], "P2 died this turn")
+	expect(m.hp[0] == 18, "P2 Shuriken (Normal) hit before the Punch (Slow)")
 
 
 func _test_win_last_player() -> void:
@@ -258,29 +270,23 @@ func _test_win_last_player() -> void:
 	m.positions[0] = Vector2i(2, 2)
 	m.positions[1] = Vector2i(3, 2)
 	m.positions[2] = Vector2i(2, 3)
-	# P4 punches nobody; P1 punches P2, P2 punches P1, P3 punches north into P1's tile...
-	# Simpler: three players at 4 HP, P4 punches P3 from F2 is far.
-	# KO P1 P2 P3 with P4 punching nothing and others punching each other isn't enough.
-	# Direct: P1 punches P2, P2 punches P3, P3 punches P1, all adjacent triangle + P4 idle.
 	m.positions[3] = Vector2i(5, 5)
-	m.play_programmed_round(filled("P E,S N,M S", "P W,S N,M S", "P N,S N,M S", "S N,M N,M E"))
-	# P1 C3 punch E hits P2 D3; P2 punch W hits P1; P3 C4 punch N hits P1 (same tile).
-	# P1 takes 4+4=8 but only had 4, dies; P2 takes 4, dies; P3 alive.
-	# Wait P3 punch N from C4 hits C3 which is P1. P3 survives. P4 alive too. Not a win.
+	m.play_programmed_round(filled("P E", "P W", "P N"))
 	expect(m.alive[2] and m.alive[3], "P3 and P4 remain")
 	expect(m.phase != ArenaMatch.Phase.MATCH_OVER, "match continues with 2+")
-	# Finish them: next round P3 punches... we only needed continue vs over.
+	m.play_programmed_round(filled("M"))
+	m.play_programmed_round(filled("M"))
 	m.hp[2] = 4
 	m.hp[3] = 4
 	m.positions[2] = Vector2i(4, 5)
 	m.positions[3] = Vector2i(5, 5)
-	m.play_programmed_round({2: prog("P E,S N,M S"), 3: prog("P W,S N,M S")})
+	m.play_programmed_round({2: prog("P E"), 3: prog("P W")})
 	expect(m.phase == ArenaMatch.Phase.MATCH_OVER, "match over after last two KO")
 	expect(m.winners.is_empty(), "shared final KO is a draw")
 
 
 func _test_step_through_matches_batch() -> void:
-	var programs := filled("M E,S E,P N", "M W,S W,P S", "M N,S N,P E", "M S,S S,P W")
+	var programs := filled("M E", "M W", "M N", "M S")
 	var batch := ArenaMatch.new()
 	batch.play_programmed_round(programs)
 	var stepped := ArenaMatch.new()
@@ -301,30 +307,24 @@ func _test_step_through_matches_batch() -> void:
 	expect(stepped.positions == batch.positions, "step positions match batch")
 	expect(stepped.alive == batch.alive, "step alive matches batch")
 	expect(stepped.priority == batch.priority, "step priority matches batch")
-	expect(n > 3, "stepped one action at a time")
+	expect(n > 1, "stepped one action at a time")
 
 
 func _test_declare_preview_chains_moves() -> void:
 	var m := ArenaMatch.new()
-	var slots: Array = [
-		ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_E),
-		{},
-		ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_N),
-	]
+	var slots: Array = [ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_E)]
 	var preview: Dictionary = m.declare_preview(0, slots)
-	# P1 starts A5; slot1 East -> B5; empty slot2; slot3 North from B5 -> B4.
-	expect(preview.plan_origin == Vector2i(1, 4), "next-slot origin is after slot 1 only (B5)")
-	expect(preview.steps.size() == 2, "empty slot is skipped in ghost list")
-	expect(preview.steps[1].to == Vector2i(1, 3), "slot 3 ghost is B4 after chained move")
+	expect(preview.plan_origin == Vector2i(1, 4), "single Move east ghosts to B5")
+	expect(preview.steps.size() == 1, "one declared action, one ghost")
+	expect(preview.steps[0].to == Vector2i(1, 4), "ghost lands on B5")
 	slots[0] = {}
 	preview = m.declare_preview(0, slots)
-	expect(preview.plan_origin == Vector2i(0, 4), "clearing slot 1 resets origin to A5")
-	expect(preview.steps[0].to == Vector2i(0, 3), "slot 3 recast from A5 north to A4")
+	expect(preview.plan_origin == Vector2i(0, 4), "clearing the action resets origin to A5")
 
 
 func _test_declare_follows_priority() -> void:
-	var m := match_with(filled("M N,M S,M E"))
-	expect(m.priority[0] == 1, "P2 is top priority after round 1")
+	var m := match_with(filled("M N"))
+	expect(m.priority[0] == 1, "P2 is top priority after turn 1")
 	var order: Array[int] = []
 	for id in m.priority:
 		if m.alive[id]:
@@ -334,33 +334,37 @@ func _test_declare_follows_priority() -> void:
 
 func _test_once_per_round_limit() -> void:
 	var m := ArenaMatch.new()
-	var err := m.submit_program(0, prog("S N,S E,M S"))
-	expect(err != "", "duplicate Shuriken rejected")
-	err = m.submit_program(0, prog("M N,M S,M E"))
-	expect(err == "", "Move may fill all 3 slots")
-	err = m.submit_program(0, prog("P N,S E,P S"))
-	expect(err != "", "duplicate Punch rejected")
+	var err := m.submit_program(0, prog("S N"))
+	expect(err == "", "Shuriken is legal on turn 1")
+	m.play_programmed_round({0: prog("S N"), 1: idle(), 2: idle(), 3: idle()})
+	err = m.submit_program(0, prog("S N"))
+	expect(err != "", "Shuriken rejected while still on cooldown")
+	m.play_programmed_round(filled("M"))
+	m.play_programmed_round(filled("M"))
+	err = m.submit_program(0, prog("S N"))
+	expect(err == "", "Shuriken available after 3 turns")
+	err = m.submit_program(0, prog("M N"))
+	expect(err == "", "Move is never on cooldown")
 
 
 func _test_xp_and_level_up() -> void:
-	var m := match_with(filled("M N,M S,M E"))
-	expect(m.xp[0] == 1, "alive-only round is 1 XP")
+	var m := match_with(filled("M N"))
+	expect(m.xp[0] == 1, "alive-only turn is 1 XP")
 	m = ArenaMatch.new()
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(1, 2)
-	m.play_programmed_round(filled("P E,S N,M S", "M N,M S,M E"))
+	m.play_programmed_round(filled("P E"))
 	expect(m.xp[1] == 2, "damage bonus stacks on base XP")
 	m = ArenaMatch.new()
 	m.positions[0] = Vector2i(2, 2) # C3
-	m.play_programmed_round(filled("M E,M W,M E"))
-	# C3 east D3 (center), west C3, east D3 — ends D3 center
+	m.play_programmed_round(filled("M E"))
 	expect(m.xp[0] == 2, "center occupancy bonus stacks on base XP")
 	m = ArenaMatch.new()
-	m.xp[0] = 4
+	m.xp[0] = 14
 	m.rng.seed = 1
-	m.play_programmed_round(filled("M N,M S,M E"))
-	expect(m.xp[0] == 5, "XP is cumulative through the 5 threshold")
-	expect(m.owned[0].size() == 4, "crossing 5 XP grants one acquired ability")
+	m.play_programmed_round(filled("M N"))
+	expect(m.xp[0] == 15, "XP is cumulative through the 15 threshold")
+	expect(m.owned[0].size() == 4, "crossing 15 XP grants one acquired ability")
 	expect(m.phase == ArenaMatch.Phase.DECLARE, "tests auto-resolve the level-up pick")
 
 
@@ -368,12 +372,12 @@ func _test_heal() -> void:
 	var m := ArenaMatch.new()
 	m.owned[0].append(ArenaMatch.ActionKind.HEAL)
 	m.hp[0] = 10
-	m.play_programmed_round(filled("H,S N,P N"))
+	m.play_programmed_round(filled("H"))
 	expect(m.hp[0] == 12, "Heal restores 2")
 	m = ArenaMatch.new()
 	m.owned[0].append(ArenaMatch.ActionKind.HEAL)
 	m.hp[0] = 19
-	m.play_programmed_round(filled("H,S N,P N"))
+	m.play_programmed_round(filled("H"))
 	expect(m.hp[0] == 20, "Heal cannot exceed 20")
 
 
@@ -382,21 +386,21 @@ func _test_flying_kick() -> void:
 	m.owned[0].append(ArenaMatch.ActionKind.FLYING_KICK)
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(2, 2) # C3
-	m.play_programmed_round(filled("K E,S N,P N"))
+	m.play_programmed_round(filled("K E"))
 	expect(m.positions[0] == Vector2i(1, 2), "kick steps to B3")
 	expect(m.hp[1] == 18, "kick deals 2 to the tile beyond the landing")
 	m = ArenaMatch.new()
 	m.owned[0].append(ArenaMatch.ActionKind.FLYING_KICK)
 	m.positions[0] = Vector2i(0, 0) # A1
 	m.positions[1] = Vector2i(0, 1) # A2 south of wall-fail north
-	m.play_programmed_round(filled("K N,S N,P N"))
+	m.play_programmed_round(filled("K N"))
 	expect(m.positions[0] == Vector2i(0, 0), "wall-fail kick does not move")
 	expect(m.hp[1] == 20, "nothing north of A1 to hit")
 	m = ArenaMatch.new()
 	m.owned[0].append(ArenaMatch.ActionKind.FLYING_KICK)
 	m.positions[0] = Vector2i(4, 2) # E3
 	m.positions[1] = Vector2i(5, 2) # F3 against east wall
-	m.play_programmed_round(filled("K E,S N,P N"))
+	m.play_programmed_round(filled("K E"))
 	expect(m.positions[0] == Vector2i(4, 2), "blocked push-kick stays put")
 	expect(m.hp[1] == 18, "wall-fail kick still hits the adjacent occupant")
 
@@ -408,7 +412,7 @@ func _test_frost_ring() -> void:
 	m.positions[1] = Vector2i(2, 3) # C4
 	m.positions[2] = Vector2i(3, 2) # D3
 	m.positions[3] = Vector2i(5, 5) # F6 out of ring
-	m.play_programmed_round(filled("R,S N,P N"))
+	m.play_programmed_round(filled("R"))
 	expect(m.hp[1] == 19, "frost hits adjacent C4")
 	expect(m.hp[2] == 19, "frost hits adjacent D3")
 	expect(m.hp[3] == 20, "frost does not hit F6")
@@ -420,14 +424,14 @@ func _test_fireball_splash() -> void:
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(4, 2) # E3
 	m.positions[2] = Vector2i(4, 1) # E2 adjacent to stop
-	m.play_programmed_round(filled("F E,S N,P N", "P S,M N,M S"))
+	m.play_programmed_round(filled("F E"))
 	expect(m.hp[1] == 17, "fireball direct hit 3")
 	expect(m.hp[2] == 19, "fireball splash 1 on neighbor of impact")
 	m = ArenaMatch.new()
 	m.owned[0].append(ArenaMatch.ActionKind.FIREBALL)
 	m.positions[0] = Vector2i(5, 2) # F3
 	m.positions[1] = Vector2i(5, 1) # F2
-	m.play_programmed_round(filled("F E,S N,P N"))
+	m.play_programmed_round(filled("F E"))
 	expect(m.hp[1] == 19, "wall-whiff still splashes tiles adjacent to the wall")
 
 
@@ -436,7 +440,7 @@ func _test_windwall_reflects_projectile() -> void:
 	m.owned[1].append(ArenaMatch.ActionKind.WINDWALL)
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(4, 2) # E3
-	m.play_programmed_round(filled("S E,P N,M N", "W W,S N,P N"))
+	m.play_programmed_round(filled("S E", "W W"))
 	expect(m.hp[1] == 20, "Windwall blocks the incoming Shuriken")
 	expect(m.hp[0] == 18, "reflected Shuriken travels west and hits the thrower")
 	m = ArenaMatch.new()
@@ -444,7 +448,7 @@ func _test_windwall_reflects_projectile() -> void:
 	m.owned[0].append(ArenaMatch.ActionKind.FROST_RING)
 	m.positions[0] = Vector2i(2, 2)
 	m.positions[1] = Vector2i(2, 3)
-	m.play_programmed_round(filled("R,S N,P N", "W N,S N,P N"))
+	m.play_programmed_round(filled("R", "W N"))
 	expect(m.hp[1] == 19, "Windwall does not block Frost Ring")
 
 
@@ -466,7 +470,7 @@ func _test_cpu_ignores_hidden_programs() -> void:
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(4, 2) # E3 in a straight east line
 	# Hidden bait: P2's unrevealed plan leaves the line. A cheating CPU would not throw east.
-	m.programs[1] = prog("M N,M N,M N")
+	m.programs[1] = prog("M N")
 	var plan: Array = _cpu_plan(m, 0)
 	expect(_plan_has(plan, ArenaMatch.ActionKind.SHURIKEN, ArenaMatch.DIR_E), "CPU throws at the visible line, not at P2's hidden north moves")
 	expect(m.programs[1][0].kind == ArenaMatch.ActionKind.MOVE, "planner must not rewrite other programs")
@@ -557,14 +561,9 @@ func _test_cpu_projects_own_moves() -> void:
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(2, 3) # C4 — not on a cardinal/diagonal ray
 	var plan: Array = _cpu_plan(m, 0)
-	expect(plan[0].kind == ArenaMatch.ActionKind.MOVE, "first slot steps in to close punch range")
-	expect(_plan_has(plan, ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_E), "ghost projection steps east toward C4")
-	var origin2: Vector2i = m.declare_preview(0, [plan[0], {}, {}]).plan_origin
-	expect(origin2 == Vector2i(1, 2), "second slot is planned from the ghost tile B3")
-	expect(
-		plan[1].kind == ArenaMatch.ActionKind.PUNCH or plan[1].kind == ArenaMatch.ActionKind.SHURIKEN,
-		"from B3 the CPU uses a now-available attack"
-	)
+	expect(plan.size() == 1, "CPU commits one action per turn")
+	expect(plan[0].kind == ArenaMatch.ActionKind.MOVE, "no current attack line: step in")
+	expect(plan[0].dir == ArenaMatch.DIR_E, "closes east toward C4")
 
 
 func _test_cpu_stand_when_retreat_loops() -> void:
@@ -576,13 +575,62 @@ func _test_cpu_stand_when_retreat_loops() -> void:
 	m.alive[3] = false
 	m.pos_history[0] = [Vector2i(0, 1), Vector2i(0, 0)]
 	m.last_step_dir[0] = ArenaMatch.DIR_N
-	m.owned[0].append(ArenaMatch.ActionKind.WINDWALL)
 	var plan: Array = _cpu_plan(m, 0)
-	expect(plan[0].kind != ArenaMatch.ActionKind.MOVE, "no productive retreat: do not bounce off the corner")
+	expect(not ArenaMatch.is_pass(plan[0]), "cornered CPU still declares an action")
 	expect(
-		plan[0].kind == ArenaMatch.ActionKind.WINDWALL or plan[0].kind == ArenaMatch.ActionKind.PUNCH,
-		"make a stand with Windwall or an attack"
+		plan[0].kind == ArenaMatch.ActionKind.PUNCH or plan[0].kind == ArenaMatch.ActionKind.SHURIKEN,
+		"a valid attack from A1 into B1 beats passing or bouncing"
 	)
+
+
+func _test_cpu_never_idles() -> void:
+	var m := ArenaMatch.new()
+	m.hp[0] = 5
+	m.positions[0] = Vector2i(0, 0) # A1 corner
+	m.positions[1] = Vector2i(1, 0) # B1
+	m.alive[2] = false
+	m.alive[3] = false
+	m.pos_history[0] = [Vector2i(0, 1), Vector2i(0, 0)]
+	m.last_step_dir[0] = ArenaMatch.DIR_N
+	m.last_used_turn[0][ArenaMatch.ActionKind.SHURIKEN] = m.round_index
+	m.last_used_turn[0][ArenaMatch.ActionKind.PUNCH] = m.round_index
+	var plan: Array = _cpu_plan(m, 0)
+	expect(plan.size() == 1, "CPU always queues one action")
+	expect(plan[0].has("kind"), "CPU action has a kind")
+	expect(not ArenaMatch.is_pass(plan[0]), "CPU never submits a pass / empty turn")
+	expect(plan[0].kind == ArenaMatch.ActionKind.MOVE, "with attacks on cooldown, CPU still Moves")
+	expect(plan[0].dir != Vector2i.ZERO, "the Move has a direction even if it will fail into a wall")
+	expect(
+		ArenaMatch.in_bounds(m.positions[0] + plan[0].dir),
+		"idle fallback still steps onto the board, not into a wall"
+	)
+
+
+func _test_cpu_edge_does_not_walk_into_wall() -> void:
+	var m := ArenaMatch.new()
+	m.positions[0] = Vector2i(5, 2) # F3 — eastern wall
+	m.positions[1] = Vector2i(2, 3) # C4, not on a ray from F3
+	m.positions[2] = Vector2i(0, 0) # A1
+	m.positions[3] = Vector2i(1, 5) # B6 — not on a ray from F3
+	var plan: Array = _cpu_plan(m, 0)
+	expect(plan[0].kind == ArenaMatch.ActionKind.MOVE, "no line from F3: CPU Moves")
+	expect(plan[0].dir != ArenaMatch.DIR_E, "nothing is east of F; do not walk into the wall")
+	expect(ArenaMatch.in_bounds(m.positions[0] + plan[0].dir), "approach stays on the board")
+	var dest: Vector2i = m.positions[0] + plan[0].dir
+	expect(dest.x <= m.positions[0].x, "horizontal sign toward C/D and western foes is west, not east")
+	m = ArenaMatch.new()
+	m.hp[0] = 5
+	m.positions[0] = Vector2i(5, 2) # F3
+	m.positions[1] = Vector2i(3, 2) # D3 — threat from the west
+	m.alive[2] = false
+	m.alive[3] = false
+	m.last_used_turn[0][ArenaMatch.ActionKind.SHURIKEN] = m.round_index
+	m.last_used_turn[0][ArenaMatch.ActionKind.PUNCH] = m.round_index
+	plan = _cpu_plan(m, 0)
+	expect(not ArenaMatch.is_pass(plan[0]), "low-HP edge CPU still acts")
+	expect(plan[0].kind == ArenaMatch.ActionKind.MOVE, "attacks on cooldown: Move")
+	expect(plan[0].dir != ArenaMatch.DIR_E, "flee/stand must not treat off-board east as farther")
+	expect(ArenaMatch.in_bounds(m.positions[0] + plan[0].dir), "least-bad Move is still on the board")
 
 
 

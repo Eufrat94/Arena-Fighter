@@ -2,6 +2,7 @@ extends Control
 
 const PlanBar = preload("res://scripts/plan_bar.gd")
 const CpuPlanner = preload("res://scripts/cpu_planner.gd")
+const ACTION_BEAT := 1.0
 
 const PLAYER_COLORS := [
 	Color("e85d4c"),
@@ -25,27 +26,104 @@ var over_panel: VBoxContainer
 var draft_label: Label
 var handoff_label: Label
 var hover_label: Label
-var center_label: Label
-var priority_label: Label
-var next_btn: Button
+var priority_label: RichTextLabel
 var stage_label: Label
 var plan_bar: PlanBar
 var level_panel: VBoxContainer
 var level_title: Label
 var level_choices: VBoxContainer
 var anim_lock := false
+var autoplaying := false
 var fx_timer: Timer
 var is_cpu: Array[bool] = [false, true, true, true]
 var cpu_pending := false
 var control_checks: Array[CheckBox] = []
+var timer_label: Label
+var pause_btn: Button
+var declare_started_msec: int = 0
+var timer_armed_for: int = -1
+var timer_paused := false
+var paused_left := 0.0
+var left_panel: VBoxContainer
+var right_panel: VBoxContainer
+
+const LAYOUT_EDGE := 16.0
+const LAYOUT_GAP := 16.0
+const PRIORITY_H := 72.0
 
 
 func _ready() -> void:
 	set_anchors_preset(PRESET_FULL_RECT)
+	set_process(true)
 	_build_ui()
 	_reset_draft()
 	_refresh()
 	_kick_cpu()
+
+
+func _process(_delta: float) -> void:
+	if game.phase != ArenaMatch.Phase.DECLARE:
+		return
+	if declaring_player < 0 or is_cpu[declaring_player]:
+		if timer_label:
+			timer_label.text = ""
+		if pause_btn:
+			pause_btn.visible = false
+		return
+	if pause_btn:
+		pause_btn.visible = true
+	var left := _declare_time_left()
+	if timer_label:
+		var suffix := "  ·  paused" if timer_paused else ""
+		timer_label.text = "Decide in %d s%s" % [ceili(maxf(0.0, left)), suffix]
+		timer_label.add_theme_color_override("font_color", Color("f4a261") if left > 4.0 or timer_paused else Color("e85d4c"))
+	if not timer_paused and left <= 0.0 and not anim_lock:
+		_on_submit()
+
+
+func _declare_time_left() -> float:
+	if timer_paused:
+		return paused_left
+	var elapsed := float(Time.get_ticks_msec() - declare_started_msec) / 1000.0
+	return ArenaMatch.DECLARE_SECONDS - elapsed
+
+
+func _arm_declare_timer() -> void:
+	timer_paused = false
+	paused_left = ArenaMatch.DECLARE_SECONDS
+	declare_started_msec = Time.get_ticks_msec()
+	if pause_btn:
+		pause_btn.text = "Pause"
+
+
+func _on_toggle_timer_pause() -> void:
+	if game.phase != ArenaMatch.Phase.DECLARE:
+		return
+	if declaring_player < 0 or is_cpu[declaring_player]:
+		return
+	if timer_paused:
+		declare_started_msec = Time.get_ticks_msec() - int((ArenaMatch.DECLARE_SECONDS - paused_left) * 1000.0)
+		timer_paused = false
+		if pause_btn:
+			pause_btn.text = "Pause"
+	else:
+		paused_left = maxf(0.0, _declare_time_left())
+		timer_paused = true
+		if pause_btn:
+			pause_btn.text = "Resume"
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not (event is InputEventKey and event.pressed and not event.echo):
+		return
+	if event.keycode != KEY_SPACE:
+		return
+	if game.phase != ArenaMatch.Phase.DECLARE or autoplaying or anim_lock:
+		return
+	if declaring_player < 0 or is_cpu[declaring_player]:
+		return
+	_on_submit()
+	get_viewport().set_input_as_handled()
 
 
 func _build_ui() -> void:
@@ -55,60 +133,29 @@ func _build_ui() -> void:
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(bg)
 
-	var scroll := ScrollContainer.new()
-	scroll.set_anchors_preset(PRESET_FULL_RECT)
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
-	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
-	add_child(scroll)
-
-	var margin := MarginContainer.new()
-	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	margin.add_theme_constant_override("margin_left", 20)
-	margin.add_theme_constant_override("margin_right", 20)
-	margin.add_theme_constant_override("margin_top", 16)
-	margin.add_theme_constant_override("margin_bottom", 16)
-	scroll.add_child(margin)
-
-	var split := HBoxContainer.new()
-	split.add_theme_constant_override("separation", 20)
-	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	margin.add_child(split)
-
-	var left := VBoxContainer.new()
-	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	left.add_theme_constant_override("separation", 8)
-	split.add_child(left)
+	left_panel = VBoxContainer.new()
+	left_panel.add_theme_constant_override("separation", 8)
+	add_child(left_panel)
 
 	var title := Label.new()
 	title.text = "ARENA FIGHTER"
 	title.add_theme_font_size_override("font_size", 28)
 	title.add_theme_color_override("font_color", Color("e8dcc4"))
-	left.add_child(title)
+	left_panel.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "v2.1  ·  heuristic CPU  ·  same hidden information as a human"
+	subtitle.text = "v3.0 experiment  ·  1 action / turn  ·  15s declare"
 	subtitle.add_theme_color_override("font_color", Color("8b93a7"))
-	left.add_child(subtitle)
+	left_panel.add_child(subtitle)
 
 	phase_label = Label.new()
 	phase_label.add_theme_font_size_override("font_size", 18)
 	phase_label.add_theme_color_override("font_color", Color("f4a261"))
-	left.add_child(phase_label)
-
-	priority_label = Label.new()
-	priority_label.add_theme_color_override("font_color", Color("c5c9d4"))
-	left.add_child(priority_label)
-
-	center_label = Label.new()
-	center_label.add_theme_color_override("font_color", Color("9b72cf"))
-	left.add_child(center_label)
+	left_panel.add_child(phase_label)
 
 	var control_row := HBoxContainer.new()
 	control_row.add_theme_constant_override("separation", 14)
-	left.add_child(control_row)
+	left_panel.add_child(control_row)
 	var control_caption := Label.new()
 	control_caption.text = "Seats:"
 	control_caption.add_theme_color_override("font_color", Color("8b93a7"))
@@ -123,10 +170,37 @@ func _build_ui() -> void:
 		control_row.add_child(cb)
 		control_checks.append(cb)
 
-	var board_row := HBoxContainer.new()
-	board_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	board_row.add_theme_constant_override("separation", 12)
-	left.add_child(board_row)
+	hover_label = Label.new()
+	hover_label.add_theme_color_override("font_color", Color("6b7385"))
+	left_panel.add_child(hover_label)
+
+	status_box = VBoxContainer.new()
+	status_box.add_theme_constant_override("separation", 4)
+	left_panel.add_child(status_box)
+
+	var log_title := Label.new()
+	log_title.text = "Resolution log"
+	log_title.add_theme_color_override("font_color", Color("d6c7a1"))
+	left_panel.add_child(log_title)
+
+	log_label = RichTextLabel.new()
+	log_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	log_label.bbcode_enabled = true
+	log_label.scroll_following = true
+	log_label.custom_minimum_size.y = 140
+	left_panel.add_child(log_label)
+
+	priority_label = RichTextLabel.new()
+	priority_label.bbcode_enabled = true
+	priority_label.fit_content = true
+	priority_label.scroll_active = false
+	priority_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	priority_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	priority_label.custom_minimum_size.y = PRIORITY_H
+	priority_label.add_theme_font_size_override("normal_font_size", 24)
+	priority_label.add_theme_font_size_override("bold_font_size", 26)
+	priority_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(priority_label)
 
 	board = BoardView.new()
 	board.match_ref = game
@@ -136,41 +210,30 @@ func _build_ui() -> void:
 	board.ability_clicked.connect(_on_ability_clicked)
 	board.drag_cancelled.connect(_on_drag_cancelled)
 	board.plan_slot_clicked.connect(_clear_slot)
-	board_row.add_child(board)
+	add_child(board)
 
 	plan_bar = PlanBar.new()
 	plan_bar.slot_clicked.connect(_clear_slot)
 	plan_bar.submit_pressed.connect(_on_submit)
-	board_row.add_child(plan_bar)
+	add_child(plan_bar)
 
-	hover_label = Label.new()
-	hover_label.add_theme_color_override("font_color", Color("6b7385"))
-	left.add_child(hover_label)
-
-	status_box = VBoxContainer.new()
-	status_box.add_theme_constant_override("separation", 4)
-	left.add_child(status_box)
-
-	var right := VBoxContainer.new()
-	right.custom_minimum_size.x = 360
-	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	right.size_flags_stretch_ratio = 0.72
-	right.add_theme_constant_override("separation", 10)
-	split.add_child(right)
+	right_panel = VBoxContainer.new()
+	right_panel.add_theme_constant_override("separation", 10)
+	add_child(right_panel)
 
 	declare_panel = VBoxContainer.new()
 	declare_panel.add_theme_constant_override("separation", 8)
-	right.add_child(declare_panel)
+	right_panel.add_child(declare_panel)
 	_fill_declare_panel()
 
 	resolve_panel = VBoxContainer.new()
 	resolve_panel.add_theme_constant_override("separation", 8)
-	right.add_child(resolve_panel)
+	right_panel.add_child(resolve_panel)
 	_fill_resolve_panel()
 
 	over_panel = VBoxContainer.new()
 	over_panel.add_theme_constant_override("separation", 8)
-	right.add_child(over_panel)
+	right_panel.add_child(over_panel)
 	var over_label := Label.new()
 	over_label.name = "OverLabel"
 	over_label.add_theme_font_size_override("font_size", 22)
@@ -180,7 +243,7 @@ func _build_ui() -> void:
 
 	level_panel = VBoxContainer.new()
 	level_panel.add_theme_constant_override("separation", 10)
-	right.add_child(level_panel)
+	right_panel.add_child(level_panel)
 	level_title = Label.new()
 	level_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	level_title.add_theme_font_size_override("font_size", 20)
@@ -195,23 +258,50 @@ func _build_ui() -> void:
 	level_choices.add_theme_constant_override("separation", 8)
 	level_panel.add_child(level_choices)
 
-	var log_title := Label.new()
-	log_title.text = "Resolution log"
-	log_title.add_theme_color_override("font_color", Color("d6c7a1"))
-	right.add_child(log_title)
-
-	log_label = RichTextLabel.new()
-	log_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	log_label.bbcode_enabled = true
-	log_label.scroll_following = true
-	log_label.custom_minimum_size.y = 120
-	right.add_child(log_label)
-
 	fx_timer = Timer.new()
 	fx_timer.one_shot = true
-	fx_timer.wait_time = 0.45
+	fx_timer.wait_time = ACTION_BEAT
 	fx_timer.timeout.connect(_on_fx_done)
 	add_child(fx_timer)
+
+	resized.connect(_layout_playfield)
+	call_deferred("_layout_playfield")
+
+
+func _layout_playfield() -> void:
+	if board == null or left_panel == null or right_panel == null or plan_bar == null:
+		return
+	var vw := size.x
+	var vh := size.y
+	if vw < 2.0 or vh < 2.0:
+		return
+	var lock_w := PlanBar.SUBMIT_W + 20.0
+	var lock_h: float = plan_bar.custom_minimum_size.y
+	var cell := BoardView.CELL_MAX
+	var max_board_h := vh - LAYOUT_EDGE * 2.0 - PRIORITY_H - LAYOUT_GAP
+	var max_cell_h := (max_board_h - BoardView.PAD_TOP - BoardView.PAD_BOTTOM) / float(ArenaMatch.ROWS)
+	cell = clampf(minf(cell, max_cell_h), BoardView.CELL_MIN, BoardView.CELL_MAX)
+	var board_w := BoardView.PAD_LEFT + cell * float(ArenaMatch.COLS) + BoardView.PAD_RIGHT
+	var board_h := BoardView.PAD_TOP + cell * float(ArenaMatch.ROWS) + BoardView.PAD_BOTTOM
+	var board_x := vw * 0.5 - board_w * 0.5
+	var stack_h := PRIORITY_H + LAYOUT_GAP + board_h
+	var stack_y := (vh - stack_h) * 0.5
+	var board_y := stack_y + PRIORITY_H + LAYOUT_GAP
+	board.position = Vector2(board_x, board_y)
+	board.size = Vector2(board_w, board_h)
+	if priority_label:
+		priority_label.position = Vector2(board_x, stack_y)
+		priority_label.size = Vector2(board_w, PRIORITY_H)
+	var grid_mid_y := board_y + BoardView.PAD_TOP + cell * float(ArenaMatch.ROWS) * 0.5
+	plan_bar.position = Vector2(board_x + board_w + LAYOUT_GAP, grid_mid_y - PlanBar.circle_local_y())
+	plan_bar.size = Vector2(lock_w, lock_h)
+	var left_w := maxf(200.0, board_x - LAYOUT_GAP - LAYOUT_EDGE)
+	left_panel.position = Vector2(LAYOUT_EDGE, LAYOUT_EDGE)
+	left_panel.size = Vector2(left_w, vh - LAYOUT_EDGE * 2.0)
+	var right_x := board_x + board_w + LAYOUT_GAP + lock_w + LAYOUT_GAP
+	var right_w := maxf(180.0, vw - LAYOUT_EDGE - right_x)
+	right_panel.position = Vector2(right_x, LAYOUT_EDGE)
+	right_panel.size = Vector2(right_w, vh - LAYOUT_EDGE * 2.0)
 
 
 func _fill_declare_panel() -> void:
@@ -220,6 +310,21 @@ func _fill_declare_panel() -> void:
 	handoff_label.add_theme_font_size_override("font_size", 18)
 	declare_panel.add_child(handoff_label)
 
+	var timer_row := HBoxContainer.new()
+	timer_row.add_theme_constant_override("separation", 12)
+	declare_panel.add_child(timer_row)
+
+	timer_label = Label.new()
+	timer_label.add_theme_font_size_override("font_size", 22)
+	timer_label.add_theme_color_override("font_color", Color("f4a261"))
+	timer_row.add_child(timer_label)
+
+	pause_btn = Button.new()
+	pause_btn.text = "Pause"
+	pause_btn.tooltip_text = "Testing: freeze this player's declare countdown"
+	pause_btn.pressed.connect(_on_toggle_timer_pause)
+	timer_row.add_child(pause_btn)
+
 	draft_label = Label.new()
 	draft_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	declare_panel.add_child(draft_label)
@@ -227,7 +332,7 @@ func _fill_declare_panel() -> void:
 	var hint := Label.new()
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", Color("8b93a7"))
-	hint.text = "Pass-and-play follows this round's priority. Drag your token to Move (unlimited). Drag an aimed ability from the rail, or click Heal / Frost Ring. Shuriken, Punch, and every acquired ability are once per round. Click a plan circle to clear that slot and everything after it."
+	hint.text = "Pass-and-play, one action each turn. Drag your token or the 1/Move icon to Move. Drag or click abilities under the board. Spacebar locks in. Empty lock-in or a timeout is Pass. Click the plan circle to clear."
 	declare_panel.add_child(hint)
 
 
@@ -240,8 +345,6 @@ func _fill_resolve_panel() -> void:
 	stage_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	stage_label.add_theme_color_override("font_color", Color("d6c7a1"))
 	resolve_panel.add_child(stage_label)
-	next_btn = _btn("Next — Slot 1", _on_next_action)
-	resolve_panel.add_child(next_btn)
 
 
 func _btn(text: String, cb: Callable) -> Button:
@@ -276,8 +379,10 @@ func _on_ability_clicked(kind: int) -> void:
 
 
 func _on_drag_cancelled(reason: String) -> void:
-	if reason == "full":
-		draft_label.text = "All 3 slots are set. Click a slot to clear it."
+	if reason == "cooldown":
+		draft_label.text = "That ability is still on cooldown."
+	elif reason == "full":
+		draft_label.text = "Replace your queued action, or lock it in."
 
 
 func _slot_filled(slot: Dictionary) -> bool:
@@ -294,25 +399,23 @@ func _next_open_slot() -> int:
 func _queue_action(action: Dictionary) -> void:
 	if game.phase != ArenaMatch.Phase.DECLARE:
 		return
-	var i := _next_open_slot()
-	if i < 0:
-		draft_label.text = "All 3 slots are set. Click a slot to clear it."
-		_refresh()
-		return
 	var kind: ArenaMatch.ActionKind = action.kind
 	if not game.owns(declaring_player, kind):
 		draft_label.text = "You don't have %s yet." % ArenaMatch.kind_name(kind)
 		return
-	if not ArenaMatch.is_unlimited(kind):
-		for slot in draft:
-			if slot.has("kind") and slot.kind == kind:
-				draft_label.text = "%s can only be used once per round." % ArenaMatch.kind_name(kind)
-				return
+	if not game.ability_ready(declaring_player, kind):
+		draft_label.text = "%s is on cooldown (%d turn(s) left)." % [
+			ArenaMatch.kind_name(kind),
+			game.cooldown_left(declaring_player, kind),
+		]
+		return
 	var err := game.validate_action(action)
 	if err != "":
 		draft_label.text = err
 		return
-	draft[i] = action
+	if draft.is_empty():
+		_reset_draft()
+	draft[0] = action
 	_refresh()
 
 
@@ -327,13 +430,14 @@ func _clear_slot(index: int) -> void:
 
 
 func _on_submit() -> void:
-	var actions: Array = []
-	for slot in draft:
-		if not _slot_filled(slot):
-			draft_label.text = "Fill all 3 slots before submitting."
-			return
-		actions.append(slot)
-	var err := game.submit_program(declaring_player, actions)
+	if game.phase != ArenaMatch.Phase.DECLARE:
+		return
+	if declaring_player < 0 or game.programs.has(declaring_player):
+		return
+	var chosen: Dictionary = ArenaMatch.make_pass()
+	if not draft.is_empty() and _slot_filled(draft[0]):
+		chosen = draft[0]
+	var err := game.submit_program(declaring_player, [chosen])
 	if err != "":
 		draft_label.text = err
 		return
@@ -341,11 +445,12 @@ func _on_submit() -> void:
 
 
 func _advance_declare() -> void:
+	timer_armed_for = -1
 	if game.all_living_have_programs():
 		draft_owner = -1
 		_reset_draft()
 		game.begin_reveal()
-		_refresh()
+		_start_autoplay()
 		return
 	declaring_player = _next_undeclared()
 	_reset_draft()
@@ -361,30 +466,63 @@ func _next_undeclared() -> int:
 	return living[0] if living.size() > 0 else 0
 
 
-func _on_next_action() -> void:
-	if anim_lock:
+func _start_autoplay() -> void:
+	if autoplaying or anim_lock:
 		return
-	var fx := game.resolve_next_action()
-	if not fx.is_empty() and str(fx.get("kind", "")) not in ["cleanup", "slot_end", ""]:
-		board.play_fx(fx)
-		anim_lock = true
-		if next_btn:
-			next_btn.disabled = true
-		fx_timer.start()
+	if game.phase != ArenaMatch.Phase.REVEAL and game.phase != ArenaMatch.Phase.RESOLVING:
+		return
+	autoplaying = true
+	_auto_step()
+
+
+func _fx_is_watchable(fx: Dictionary) -> bool:
+	var kind := str(fx.get("kind", ""))
+	return kind != "" and kind != "cleanup" and kind != "slot_end" and kind != "skip"
+
+
+func _auto_step() -> void:
+	if not autoplaying:
+		return
+	var guard := 0
+	while autoplaying and guard < 40:
+		guard += 1
+		if game.phase == ArenaMatch.Phase.DECLARE or game.phase == ArenaMatch.Phase.LEVEL_UP or game.phase == ArenaMatch.Phase.MATCH_OVER:
+			_stop_autoplay()
+			_refresh()
+			_kick_cpu()
+			return
+		var fx := game.resolve_next_action()
+		_refresh()
+		if _fx_is_watchable(fx):
+			board.play_fx(fx)
+			anim_lock = true
+			if fx_timer:
+				fx_timer.wait_time = ACTION_BEAT
+				fx_timer.start()
+			return
+	_stop_autoplay()
 	_refresh()
+	_kick_cpu()
+
+
+func _stop_autoplay() -> void:
+	autoplaying = false
+	anim_lock = false
+	if fx_timer:
+		fx_timer.stop()
 
 
 func _on_fx_done() -> void:
 	anim_lock = false
-	if next_btn:
-		next_btn.disabled = false
-	_refresh()
+	if autoplaying:
+		_auto_step()
+	else:
+		_refresh()
 
 
 func _on_new_match() -> void:
-	anim_lock = false
-	if fx_timer:
-		fx_timer.stop()
+	_stop_autoplay()
+	timer_armed_for = -1
 	game.reset_match()
 	draft_owner = -1
 	declaring_player = _next_undeclared()
@@ -415,17 +553,20 @@ func _sync_declare_turn() -> void:
 	elif draft.size() != ArenaMatch.SLOTS:
 		_reset_draft()
 		draft_owner = who
+	if who != timer_armed_for:
+		timer_armed_for = who
+		_arm_declare_timer()
 
 
 func _refresh() -> void:
 	board.match_ref = game
 	board.queue_redraw()
-	phase_label.text = "Round %d  ·  %s" % [game.round_index, _phase_text()]
-	priority_label.text = "Priority: " + game._priority_text()
-	if game.last_center_occupants.is_empty() and game.round_index == 1 and game.phase == ArenaMatch.Phase.DECLARE and game.programs.is_empty():
-		center_label.text = "Center tiles: C3 C4 D3 D4  ·  +1 XP if you end a round there"
-	else:
-		center_label.text = "Center at last cleanup: " + game._center_text()
+	phase_label.text = "Turn %d" % game.round_index
+	if game.phase == ArenaMatch.Phase.LEVEL_UP:
+		phase_label.text = "Turn %d  ·  Level up — %s" % [game.round_index, ArenaMatch.PLAYER_NAMES[game.leveling_player]]
+	elif game.phase == ArenaMatch.Phase.MATCH_OVER:
+		phase_label.text = "Turn %d  ·  Match over" % game.round_index
+	priority_label.text = _priority_bbcode()
 	_rebuild_status()
 	_rebuild_log()
 
@@ -447,35 +588,39 @@ func _refresh() -> void:
 		handoff_label.add_theme_color_override("font_color", PLAYER_COLORS[declaring_player])
 		var cpu_turn := declaring_player >= 0 and is_cpu[declaring_player]
 		if cpu_turn:
-			handoff_label.text = "%s (CPU) is writing a 3-action plan from public board info only." % ArenaMatch.PLAYER_NAMES[declaring_player]
+			handoff_label.text = "%s (CPU) is picking one action from public board info only." % ArenaMatch.PLAYER_NAMES[declaring_player]
 			draft_label.text = "No peeking — the CPU cannot see unrevealed programs, including yours."
+			if pause_btn:
+				pause_btn.visible = false
 			if plan_bar:
-				plan_bar.visible = false
+				plan_bar.set_engaged(false)
 			if board:
 				board.set_declare_context(false, -1, false)
 		else:
-			handoff_label.text = "Hand the machine to %s — program 3 actions." % ArenaMatch.PLAYER_NAMES[declaring_player]
-			var open := _next_open_slot()
-			if open < 0:
-				draft_label.text = "All 3 actions queued. Submit your plan under the board."
+			handoff_label.text = ""
+			if _next_open_slot() < 0:
+				draft_label.text = "Action queued. Lock it in, or drag again to replace it."
 			else:
-				draft_label.text = "Next empty slot: %d  ·  drag on the board to queue" % (open + 1)
+				draft_label.text = "Choose Move or an ability — or Pass / stay. Timer is 15 seconds."
+			if pause_btn:
+				pause_btn.visible = true
+				pause_btn.text = "Resume" if timer_paused else "Pause"
 			if plan_bar:
-				plan_bar.visible = true
-				plan_bar.set_plan(declaring_player, draft, open < 0)
+				plan_bar.set_engaged(true)
+				plan_bar.set_plan(declaring_player, draft, true)
 			if board:
 				var preview: Dictionary = game.declare_preview(declaring_player, draft)
 				board.set_declare_context(
 					true,
 					declaring_player,
-					open < 0,
+					false,
 					preview.get("steps", []),
 					preview.get("plan_origin", game.positions[declaring_player]),
-					_draft_used_kinds()
+					_dimmed_kinds()
 				)
 	else:
 		if plan_bar:
-			plan_bar.visible = false
+			plan_bar.set_engaged(false)
 		if board:
 			board.set_declare_context(false, -1, false)
 
@@ -484,13 +629,13 @@ func _refresh() -> void:
 		var lines: PackedStringArray = PackedStringArray()
 		match game.resolve_stage():
 			"reveal":
-				lines.append("Programs revealed. Step through each action with Next.")
+				lines.append("Actions revealed — playing this turn.")
 			"mid_slot":
-				lines.append("Resolving Slot %d — more actions remain in this slot." % (game.current_slot + 1))
+				lines.append("Playing this turn — Instant, then Normal, then Slow.")
 			"slot_boundary":
-				lines.append("Slot %d finished. Next begins Slot %d." % [game.current_slot + 1, game.current_slot + 2])
+				lines.append("Turn actions finished.")
 			"end_of_round":
-				lines.append("Slot 3 finished. Next awards XP, then cleanup (center, eliminations, priority).")
+				lines.append("Cleanup: XP, eliminations, priority.")
 			_:
 				lines.append("Resolving…")
 		for id in game.living_ids():
@@ -498,8 +643,6 @@ func _refresh() -> void:
 				lines.append("%s  %s" % [ArenaMatch.PLAYER_NAMES[id], _program_with_active_slot(game.programs[id])])
 		reveal.text = "\n".join(lines)
 		stage_label.text = _stage_caption()
-		next_btn.text = game.next_prompt()
-		next_btn.disabled = anim_lock
 
 	if game.phase == ArenaMatch.Phase.MATCH_OVER:
 		var over: Label = over_panel.get_node("OverLabel")
@@ -514,6 +657,14 @@ func _refresh() -> void:
 			over.text = "Shared victory: %s" % ", ".join(names)
 
 
+func _priority_bbcode() -> String:
+	var bits: PackedStringArray = PackedStringArray()
+	for id in game.priority:
+		var hex: String = PLAYER_COLORS[id].to_html(false)
+		bits.append("[color=#%s][b]%s[/b][/color]" % [hex, ArenaMatch.PLAYER_NAMES[id]])
+	return "[center][color=#8b93a7]Priority[/color]\n%s[/center]" % "  [color=#6b7385]›[/color]  ".join(bits)
+
+
 func _phase_text() -> String:
 	match game.phase:
 		ArenaMatch.Phase.DECLARE:
@@ -525,9 +676,9 @@ func _phase_text() -> String:
 				"end_of_round":
 					return "Cleanup"
 				"slot_boundary":
-					return "Slot %d complete" % (game.current_slot + 1)
+					return "Turn complete"
 				_:
-					return "Resolve slot %d" % (game.current_slot + 1)
+					return "Resolve"
 		ArenaMatch.Phase.LEVEL_UP:
 			return "Level up — %s" % ArenaMatch.PLAYER_NAMES[game.leveling_player]
 		ArenaMatch.Phase.MATCH_OVER:
@@ -543,7 +694,7 @@ func _program_with_active_slot(actions: Array) -> String:
 		mark = game.current_slot
 	for i in actions.size():
 		var a: Dictionary = actions[i]
-		var bit := "%s %s" % [ArenaMatch.kind_name(a.kind), ArenaMatch.dir_name(a.dir)]
+		var bit := "Pass" if ArenaMatch.is_pass(a) else "%s %s" % [ArenaMatch.kind_name(a.kind), ArenaMatch.dir_name(a.dir)]
 		if i == mark:
 			parts.append("[%s]" % bit)
 		else:
@@ -554,13 +705,13 @@ func _program_with_active_slot(actions: Array) -> String:
 func _stage_caption() -> String:
 	match game.resolve_stage():
 		"reveal":
-			return "Ready to resolve"
+			return "Playing turn"
 		"mid_slot":
-			return "Mid-slot — more actions this slot"
+			return "Playing actions"
 		"slot_boundary":
-			return "Slot boundary"
+			return "Turn complete"
 		"end_of_round":
-			return "End of round"
+			return "Cleanup"
 		_:
 			return ""
 
@@ -601,7 +752,13 @@ func _rebuild_status() -> void:
 		line.add_theme_color_override("font_color", PLAYER_COLORS[i])
 		if game.alive[i]:
 			var seat := "CPU" if is_cpu[i] else "human"
-			line.text = "%s  HP %d  XP %d  @ %s  ·  %s" % [ArenaMatch.PLAYER_NAMES[i], game.hp[i], game.xp[i], ArenaMatch.tile_name(game.positions[i]), seat]
+			line.text = "%s  HP %d  XP %d  ·  %s%s" % [
+				ArenaMatch.PLAYER_NAMES[i],
+				game.hp[i],
+				game.xp[i],
+				seat,
+				_cooldown_status(i),
+			]
 		else:
 			line.text = "%s  eliminated" % ArenaMatch.PLAYER_NAMES[i]
 			line.add_theme_color_override("font_color", Color("6b7385"))
@@ -614,6 +771,35 @@ func _draft_used_kinds() -> Array:
 		if slot.has("kind"):
 			kinds.append(slot.kind)
 	return kinds
+
+
+func _dimmed_kinds() -> Array:
+	var kinds: Array = []
+	if declaring_player < 0:
+		return kinds
+	for kind in [
+		ArenaMatch.ActionKind.SHURIKEN,
+		ArenaMatch.ActionKind.PUNCH,
+		ArenaMatch.ActionKind.HEAL,
+		ArenaMatch.ActionKind.FLYING_KICK,
+		ArenaMatch.ActionKind.FROST_RING,
+		ArenaMatch.ActionKind.FIREBALL,
+		ArenaMatch.ActionKind.WINDWALL,
+	]:
+		if not game.ability_ready(declaring_player, kind):
+			kinds.append(kind)
+	return kinds
+
+
+func _cooldown_status(player_id: int) -> String:
+	var bits: PackedStringArray = PackedStringArray()
+	for kind in game.owned[player_id]:
+		var left := game.cooldown_left(player_id, kind)
+		if left > 0:
+			bits.append("%s %d" % [ArenaMatch.kind_name(kind), left])
+	if bits.is_empty():
+		return ""
+	return "  ·  CD " + ", ".join(bits)
 
 
 func _rebuild_level_choices() -> void:
@@ -700,9 +886,5 @@ func _cpu_step() -> void:
 
 
 func _cpu_fallback() -> Array:
-	return [
-		ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_N),
-		ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_S),
-		ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_E),
-	]
+	return [ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_N)]
 

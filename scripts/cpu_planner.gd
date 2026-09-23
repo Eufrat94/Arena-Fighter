@@ -21,14 +21,10 @@ func plan_program(match_ref: ArenaMatch, player_id: int) -> Array:
 	plan_visited.clear()
 	projected_hp = game.hp[cpu_id]
 	rng.seed = match_ref.rng.randi()
-	var slots: Array = [{}, {}, {}]
-	for i in ArenaMatch.SLOTS:
-		var action := _pick_slot(slots)
-		slots[i] = action
-		_mark_used(action)
-		if action.kind == ArenaMatch.ActionKind.HEAL:
-			projected_hp = mini(ArenaMatch.START_HP, projected_hp + ArenaMatch.HEAL_AMOUNT)
-	return slots
+	var action := _pick_slot([{}])
+	if action.is_empty() or not action.has("kind") or ArenaMatch.is_pass(action):
+		action = _least_bad_move(game.positions[cpu_id])
+	return [action]
 
 
 func _mark_used(action: Dictionary) -> void:
@@ -38,15 +34,11 @@ func _mark_used(action: Dictionary) -> void:
 
 
 func _can(kind: ArenaMatch.ActionKind) -> bool:
-	if not game.owns(cpu_id, kind):
-		return false
-	if ArenaMatch.is_unlimited(kind):
-		return true
-	return not used.has(kind)
+	return game.ability_ready(cpu_id, kind)
 
 
-func _origin(slots: Array) -> Vector2i:
-	return game.declare_preview(cpu_id, slots).plan_origin
+func _origin(_slots: Array) -> Vector2i:
+	return game.positions[cpu_id]
 
 
 func _pick_slot(slots: Array) -> Dictionary:
@@ -383,33 +375,78 @@ func _reposition_safe(origin: Vector2i) -> Dictionary:
 
 
 func _make_stand(origin: Vector2i) -> Dictionary:
-	var foe := _nearest_foe(origin)
-	if _can(ArenaMatch.ActionKind.WINDWALL) and foe >= 0:
-		var face := ArenaMatch.line_dir(origin, game.positions[foe])
-		if face == Vector2i.ZERO:
-			var d: Vector2i = game.positions[foe] - origin
-			if absi(d.x) >= absi(d.y):
-				face = Vector2i(signi(d.x), 0)
-			else:
-				face = Vector2i(0, signi(d.y))
-		if face != Vector2i.ZERO:
-			return ArenaMatch.make_action(ArenaMatch.ActionKind.WINDWALL, face)
+	var hit := _any_valid_attack(origin)
+	if not hit.is_empty():
+		return hit
+	return _least_bad_move(origin)
+
+
+func _any_valid_attack(origin: Vector2i) -> Dictionary:
+	var cluster := _best_cluster(origin)
+	if not cluster.is_empty():
+		return cluster
 	var hit := _best_direct_attack(origin)
 	if not hit.is_empty():
 		return hit
-	if _can(ArenaMatch.ActionKind.HEAL):
-		return ArenaMatch.make_action(ArenaMatch.ActionKind.HEAL)
+	if _can(ArenaMatch.ActionKind.FROST_RING) and _foe_count_adjacent(origin) >= 1:
+		return ArenaMatch.make_action(ArenaMatch.ActionKind.FROST_RING)
 	return {}
+
+
+func _legal_move_dirs(origin: Vector2i) -> Array[Vector2i]:
+	var dirs: Array[Vector2i] = []
+	for dir in ArenaMatch.ORTHOGONAL:
+		if ArenaMatch.in_bounds(origin + dir):
+			dirs.append(dir)
+	return dirs
+
+
+func _dir_opposes_goal(dir: Vector2i, origin: Vector2i, goal: Vector2i) -> bool:
+	var want: Vector2i = goal - origin
+	if dir.x != 0 and want.x != 0 and signi(dir.x) != signi(want.x):
+		return true
+	if dir.y != 0 and want.y != 0 and signi(dir.y) != signi(want.y):
+		return true
+	return false
+
+
+func _least_bad_move(origin: Vector2i) -> Dictionary:
+	var dirs := _legal_move_dirs(origin)
+	if dirs.is_empty():
+		return ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_N)
+	var best_dir: Vector2i = dirs[0]
+	var best_score := -999999
+	var tied: Array[Vector2i] = []
+	for dir in dirs:
+		var dest: Vector2i = origin + dir
+		var increased := 0
+		var delta_sum := 0
+		for id in _living_foes():
+			var there: Vector2i = game.positions[id]
+			var before := ArenaMatch.chebyshev(origin, there)
+			var after := ArenaMatch.chebyshev(dest, there)
+			if after > before:
+				increased += 1
+			delta_sum += after - before
+		var score := increased * 1000 + delta_sum * 10
+		if game.player_at(dest) < 0:
+			score += 1
+		if score > best_score:
+			best_score = score
+			tied = [dir]
+			best_dir = dir
+		elif score == best_score:
+			tied.append(dir)
+	if not tied.is_empty():
+		best_dir = tied[rng.randi_range(0, tied.size() - 1)]
+	return ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, best_dir)
 
 
 func _fallback_move(origin: Vector2i) -> Dictionary:
 	var step := _best_step(origin, _nearest_center(origin), false)
 	if not step.is_empty():
 		return step
-	for dir in ArenaMatch.ORTHOGONAL:
-		if ArenaMatch.in_bounds(origin + dir):
-			return ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, dir)
-	return ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_N)
+	return _least_bad_move(origin)
 
 
 func _nearest_foe(origin: Vector2i) -> int:
@@ -438,12 +475,19 @@ func _nearest_center(origin: Vector2i) -> Vector2i:
 
 
 func _best_step(origin: Vector2i, goal: Vector2i, flee: bool) -> Dictionary:
+	var dirs := _legal_move_dirs(origin)
+	if dirs.is_empty():
+		return {}
+	var toward: Array[Vector2i] = []
+	for dir in dirs:
+		if not _dir_opposes_goal(dir, origin, goal):
+			toward.append(dir)
+	if not flee and not toward.is_empty():
+		dirs = toward
 	var choices: Array[Vector2i] = []
 	var best_score := -99999
-	for dir in ArenaMatch.ORTHOGONAL:
+	for dir in dirs:
 		var dest: Vector2i = origin + dir
-		if not ArenaMatch.in_bounds(dest):
-			continue
 		var score := 0
 		if flee:
 			score = _clearance(dest) * 10 + _sum_foe_dist(dest)
@@ -451,9 +495,13 @@ func _best_step(origin: Vector2i, goal: Vector2i, flee: bool) -> Dictionary:
 			var before := ArenaMatch.chebyshev(origin, goal)
 			var after := ArenaMatch.chebyshev(dest, goal)
 			score = (before - after) * 20
+			var want: Vector2i = goal - origin
+			if dir.x != 0 and signi(dir.x) == signi(want.x) and want.x != 0:
+				score += 8
+			elif dir.y != 0 and signi(dir.y) == signi(want.y) and want.y != 0:
+				score += 8
 			if ArenaMatch.is_center(dest):
 				score += 3
-			score += rng.randi_range(0, 1)
 		if score > best_score:
 			best_score = score
 			choices = [dir]
@@ -461,9 +509,6 @@ func _best_step(origin: Vector2i, goal: Vector2i, flee: bool) -> Dictionary:
 			choices.append(dir)
 	if choices.is_empty():
 		return {}
-	if flee and best_score < _clearance(origin) * 10 + _sum_foe_dist(origin):
-		# No improvement, still step a random legal way rather than pass.
-		pass
 	var dir: Vector2i = choices[rng.randi_range(0, choices.size() - 1)]
 	return ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, dir)
 

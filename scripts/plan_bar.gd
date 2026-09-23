@@ -4,11 +4,12 @@ extends Control
 signal slot_clicked(index: int)
 signal submit_pressed
 
-const R := 32.0
-const GAP := 14.0
+const R := 36.0
+const GAP := 12.0
 const SUBMIT_W := 132.0
-const SUBMIT_H := 48.0
-const ICON_SIZE := 36.0
+const SUBMIT_H := 44.0
+const ICON_SIZE := 40.0
+const CIRCLE_TOP := 22.0
 
 const TEX_FOOT := preload("res://icons/foot.png")
 const TEX_FIST := preload("res://icons/fist.png")
@@ -18,6 +19,7 @@ var player_id: int = 0
 var draft: Array = []
 var accent := Color("e85d4c")
 var can_submit := false
+var engaged := true
 
 const PLAYER_COLORS := [
 	Color("e85d4c"),
@@ -28,8 +30,7 @@ const PLAYER_COLORS := [
 
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(SUBMIT_W + 12.0, R * 6.0 + GAP * 4.0 + SUBMIT_H + 28.0)
-	size_flags_vertical = Control.SIZE_EXPAND_FILL
+	custom_minimum_size = Vector2(SUBMIT_W + 20.0, R * 2.0 + GAP * 2.0 + SUBMIT_H + 44.0)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 
@@ -43,31 +44,45 @@ func set_plan(pid: int, slots: Array, submit_ok: bool) -> void:
 	queue_redraw()
 
 
+func set_engaged(on: bool) -> void:
+	engaged = on
+	mouse_filter = Control.MOUSE_FILTER_STOP if on else Control.MOUSE_FILTER_IGNORE
+	queue_redraw()
+
+
 func _circle_center(i: int) -> Vector2:
-	return Vector2(size.x * 0.5, 22.0 + R + float(i) * (R * 2.0 + GAP))
+	return Vector2(size.x * 0.5, circle_local_y() + float(i) * (R * 2.0 + GAP))
+
+
+static func circle_local_y() -> float:
+	return CIRCLE_TOP + R
 
 
 func _submit_rect() -> Rect2:
-	var y := _circle_center(2).y + R + GAP + 4.0
+	var y := _circle_center(max(0, ArenaMatch.SLOTS - 1)).y + R + GAP + 4.0
 	return Rect2(Vector2((size.x - SUBMIT_W) * 0.5, y), Vector2(SUBMIT_W, SUBMIT_H))
 
 
 func _gui_input(event: InputEvent) -> void:
+	if not engaged:
+		return
 	if not (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
 		return
 	var local: Vector2 = event.position
-	for i in 3:
+	for i in ArenaMatch.SLOTS:
 		if local.distance_to(_circle_center(i)) <= R + 2.0:
 			slot_clicked.emit(i)
 			accept_event()
 			return
-	if _submit_rect().has_point(local) and can_submit:
+	if _submit_rect().has_point(local):
 		submit_pressed.emit()
 		accept_event()
 
 
 func _draw() -> void:
-	for i in 3:
+	if not engaged:
+		return
+	for i in ArenaMatch.SLOTS:
 		_draw_slot_circle(i)
 	_draw_submit()
 
@@ -125,19 +140,19 @@ func _draw_slot_circle(i: int) -> void:
 
 func _draw_submit() -> void:
 	var r := _submit_rect()
-	var bg := accent if can_submit else Color(0.22, 0.24, 0.28)
-	var edge := accent.lightened(0.15) if can_submit else Color(0.35, 0.38, 0.42)
+	var bg := accent
+	var edge := accent.lightened(0.15)
 	draw_rect(r, bg, true, -1.0, true)
 	draw_rect(r, edge, false, 2.0, true)
-	var label := "Submit plan" if can_submit else "Queue 3 first"
-	var col := Color.WHITE if can_submit else Color(0.65, 0.67, 0.7)
+	var label := "Lock in" if _slot_filled(0) else "Pass / stay"
+	var col := Color.WHITE
 	draw_string(
 		ThemeDB.fallback_font,
-		r.position + Vector2(14, r.size.y * 0.62),
+		r.position + Vector2(0, r.size.y * 0.68),
 		label,
-		HORIZONTAL_ALIGNMENT_LEFT,
-		-1,
-		15,
+		HORIZONTAL_ALIGNMENT_CENTER,
+		r.size.x,
+		16,
 		col
 	)
 

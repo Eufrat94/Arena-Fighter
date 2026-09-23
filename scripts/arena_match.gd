@@ -1,13 +1,13 @@
 class_name ArenaMatch
 extends RefCounted
 
-## 6x6 simultaneous 3-slot arena. v2: XP, acquired abilities, once-per-round limits.
+## 6x6 simultaneous 1-action turns. v3 experiment: 15s declare, ability cooldowns, XP 15.
 
 const COLS := 6
 const ROWS := 6
 const START_HP := 20
 const PLAYER_COUNT := 4
-const SLOTS := 3
+const SLOTS := 1
 const SHURIKEN_DAMAGE := 2
 const PUNCH_DAMAGE := 4
 const HEAL_AMOUNT := 2
@@ -15,7 +15,9 @@ const FLYING_KICK_DAMAGE := 2
 const FROST_DAMAGE := 1
 const FIREBALL_DAMAGE := 3
 const FIREBALL_SPLASH := 1
-const XP_THRESHOLD := 5
+const XP_THRESHOLD := 15
+const ABILITY_COOLDOWN := 3
+const DECLARE_SECONDS := 15.0
 
 enum ActionKind { MOVE, SHURIKEN, PUNCH, HEAL, FLYING_KICK, FROST_RING, FIREBALL, WINDWALL }
 enum SpeedTier { INSTANT, NORMAL, SLOW }
@@ -223,6 +225,14 @@ static func make_action(kind: ActionKind, dir: Vector2i = Vector2i.ZERO) -> Dict
 	return {"kind": kind, "dir": dir}
 
 
+static func make_pass() -> Dictionary:
+	return make_action(ActionKind.MOVE, Vector2i.ZERO)
+
+
+static func is_pass(action: Dictionary) -> bool:
+	return action.get("kind", -1) == ActionKind.MOVE and action.get("dir", Vector2i(-1, -1)) == Vector2i.ZERO
+
+
 ## Cardinal or diagonal step from `from` toward `to`, or ZERO if they are not on a ray.
 static func line_dir(from: Vector2i, to: Vector2i) -> Vector2i:
 	var d: Vector2i = to - from
@@ -242,7 +252,7 @@ var priority: Array[int] = [] ## player ids, highest first
 var round_index: int = 1
 var phase: Phase = Phase.DECLARE
 var current_slot: int = 0 ## 0..2 while resolving
-var programs: Dictionary = {} ## player_id -> Array[Dictionary] of 3 actions
+var programs: Dictionary = {} ## player_id -> Array[Dictionary] of 1 action
 var log_lines: PackedStringArray = PackedStringArray()
 var log_entries: Array[Dictionary] = []
 var last_center_occupants: PackedStringArray = PackedStringArray()
@@ -266,6 +276,8 @@ var auto_pick_level_ups := false
 var last_step_dir: Array[Vector2i] = []
 ## Last two round-end tiles per player. Public. Used to stop retreat oscillation.
 var pos_history: Array = []
+## player -> Dictionary ActionKind -> last turn index it was executed
+var last_used_turn: Array = []
 
 
 func _init() -> void:
@@ -291,6 +303,7 @@ func reset_match() -> void:
 	leveling_player = -1
 	last_step_dir.clear()
 	pos_history.clear()
+	last_used_turn.clear()
 	_reset_step_state()
 	rng.randomize()
 	for i in PLAYER_COUNT:
@@ -304,6 +317,7 @@ func reset_match() -> void:
 		windwall_incoming.append([])
 		last_step_dir.append(Vector2i.ZERO)
 		pos_history.append([])
+		last_used_turn.append({})
 	round_index = 1
 	phase = Phase.DECLARE
 	current_slot = 0
@@ -350,14 +364,29 @@ func unowned_acquirable(player_id: int) -> Array:
 	return pool
 
 
+func ability_ready(player_id: int, kind: ActionKind) -> bool:
+	if is_unlimited(kind):
+		return true
+	if not owns(player_id, kind):
+		return false
+	var last: int = int(last_used_turn[player_id].get(kind, -ABILITY_COOLDOWN))
+	return round_index - last >= ABILITY_COOLDOWN
+
+
+func cooldown_left(player_id: int, kind: ActionKind) -> int:
+	if ability_ready(player_id, kind):
+		return 0
+	var last: int = int(last_used_turn[player_id].get(kind, -ABILITY_COOLDOWN))
+	return ABILITY_COOLDOWN - (round_index - last)
+
+
 func submit_program(player_id: int, actions: Array) -> String:
 	if phase != Phase.DECLARE:
 		return "Not in declare phase."
 	if player_id < 0 or player_id >= PLAYER_COUNT or not alive[player_id]:
 		return "That player cannot declare."
 	if actions.size() != SLOTS:
-		return "Program must have exactly 3 actions."
-	var used: Dictionary = {}
+		return "Choose exactly 1 action."
 	for a in actions:
 		var err := validate_action(a)
 		if err != "":
@@ -365,10 +394,8 @@ func submit_program(player_id: int, actions: Array) -> String:
 		var kind: ActionKind = a.kind
 		if not owns(player_id, kind):
 			return "You don't have %s yet." % kind_name(kind)
-		if not is_unlimited(kind):
-			if used.has(kind):
-				return "%s can only be used once per round." % kind_name(kind)
-			used[kind] = true
+		if not ability_ready(player_id, kind):
+			return "%s is on cooldown (%d turn(s) left)." % [kind_name(kind), cooldown_left(player_id, kind)]
 	programs[player_id] = actions.duplicate(true)
 	return ""
 
@@ -387,7 +414,7 @@ func begin_reveal() -> void:
 	_reset_step_state()
 	for i in PLAYER_COUNT:
 		damaged_this_round[i] = false
-	_log("--- Round %d reveal ---" % round_index, -1)
+	_log("--- Turn %d reveal ---" % round_index, -1)
 	for id in living_ids():
 		_log("%s: %s" % [PLAYER_NAMES[id], _program_text(programs[id])], -1)
 
@@ -409,16 +436,16 @@ func resolve_stage() -> String:
 func next_prompt() -> String:
 	match resolve_stage():
 		"reveal":
-			return "Next — Slot 1"
+			return "Playing turn"
 		"end_of_round":
 			return "Next — cleanup"
 		"slot_boundary":
-			return "Next — Slot %d" % (current_slot + 2)
+			return "Next"
 		"mid_slot":
 			var left := action_queue.size()
 			if left > 0:
-				return "Next — Slot %d  (%d more this slot)" % [current_slot + 1, left]
-			return "Next — Slot %d" % (current_slot + 1)
+				return "Next — %d left this turn" % left
+			return "Next"
 		"level_up":
 			return "Level up"
 		_:
@@ -435,7 +462,7 @@ func resolve_next_action() -> Dictionary:
 		return _step_action()
 	if awaiting_cleanup:
 		_cleanup_round()
-		last_fx = {"kind": "cleanup", "slot": 2}
+		last_fx = {"kind": "cleanup", "slot": current_slot}
 		return last_fx
 	if at_slot_boundary:
 		at_slot_boundary = false
@@ -473,6 +500,8 @@ func play_programmed_round(by_player: Dictionary) -> void:
 	_reset_step_state()
 	auto_pick_level_ups = true
 	for id in by_player.keys():
+		if not alive[int(id)]:
+			continue
 		var err := submit_program(int(id), by_player[id])
 		assert(err == "", err)
 	begin_reveal()
@@ -486,7 +515,7 @@ func _open_slot(slot: int) -> void:
 	action_queue.clear()
 	for i in PLAYER_COUNT:
 		windwall_incoming[i] = []
-	_log("Slot %d:" % (slot + 1), slot)
+	_log("Turn %d:" % round_index, slot)
 	for speed in [SpeedTier.INSTANT, SpeedTier.NORMAL, SpeedTier.SLOW]:
 		if _load_speed(speed):
 			return
@@ -567,7 +596,7 @@ func _cleanup_round() -> void:
 	programs.clear()
 	round_index += 1
 	current_slot = 0
-	_log("End of round. Center: %s. Next priority %s." % [_center_text(), _priority_text()], -1)
+	_log("End of turn. Center: %s. Next priority %s." % [_center_text(), _priority_text()], -1)
 	_reset_step_state()
 	if not level_queue.is_empty():
 		_present_next_level()
@@ -739,14 +768,17 @@ func validate_action(action: Dictionary) -> String:
 		return "Action needs kind."
 	var kind: ActionKind = action.kind
 	var dir: Vector2i = action.get("dir", Vector2i.ZERO)
+	if kind == ActionKind.MOVE:
+		if dir == Vector2i.ZERO:
+			return ""
+		if not is_orthogonal(dir):
+			return "Move must be N/S/E/W."
+		return ""
 	if not needs_aim(kind):
 		return ""
 	if dir == Vector2i.ZERO:
 		return "Direction required."
-	if kind == ActionKind.MOVE:
-		if not is_orthogonal(dir):
-			return "Move must be N/S/E/W."
-	elif not dir in ALL_DIRS:
+	if not dir in ALL_DIRS:
 		return "Invalid aim direction."
 	return ""
 
@@ -756,8 +788,12 @@ func _execute(actor: int, action: Dictionary) -> Dictionary:
 		return {"kind": "skip", "actor": actor}
 	var kind: ActionKind = action.kind
 	var dir: Vector2i = action.get("dir", Vector2i.ZERO)
+	if not is_unlimited(kind):
+		last_used_turn[actor][kind] = round_index
 	match kind:
 		ActionKind.MOVE:
+			if dir == Vector2i.ZERO:
+				return _apply_pass(actor)
 			return _try_move(actor, dir, "Move")
 		ActionKind.WINDWALL:
 			return _apply_windwall(actor, dir)
@@ -773,6 +809,16 @@ func _execute(actor: int, action: Dictionary) -> Dictionary:
 			return _apply_flying_kick(actor, dir)
 		_:
 			return {"kind": "skip", "actor": actor}
+
+
+func _apply_pass(actor: int) -> Dictionary:
+	_log("  %s stays put." % PLAYER_NAMES[actor])
+	return {
+		"kind": "pass",
+		"actor": actor,
+		"origin": positions[actor],
+		"success": true,
+	}
 
 
 func _try_move(mover: int, dir: Vector2i, verb: String = "Move") -> Dictionary:
@@ -1097,7 +1143,9 @@ func _priority_text() -> String:
 func _program_text(actions: Array) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	for a in actions:
-		if needs_aim(a.kind) and a.dir != Vector2i.ZERO:
+		if is_pass(a):
+			parts.append("Pass")
+		elif needs_aim(a.kind) and a.dir != Vector2i.ZERO:
 			parts.append("%s %s" % [kind_name(a.kind), dir_name(a.dir)])
 		else:
 			parts.append(kind_name(a.kind))
