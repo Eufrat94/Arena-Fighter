@@ -29,6 +29,8 @@ func _run() -> void:
 	_test_priority_rotates_after_round()
 	_test_mutual_ko_same_tier()
 	_test_dead_skip_later_slots()
+	_test_same_tier_snapshot_combat()
+	_test_normal_mutual_shuriken()
 	_test_win_last_player()
 	_test_step_through_matches_batch()
 	_test_declare_preview_chains_moves()
@@ -38,8 +40,12 @@ func _run() -> void:
 	_test_heal()
 	_test_flying_kick()
 	_test_frost_ring()
+	_test_spear_strike()
 	_test_fireball_splash()
 	_test_windwall_reflects_projectile()
+	_test_windwall_reflect_playback_legs()
+	_test_windwall_lasts_until_cleanup()
+	_test_uncontested_moves_all_apply()
 	_test_cpu_ignores_hidden_programs()
 	_test_cpu_pokes_when_low_and_safe()
 	_test_cpu_heals_when_threatened_and_low()
@@ -52,6 +58,9 @@ func _run() -> void:
 	_test_cpu_projects_own_moves()
 	_test_cpu_stand_when_retreat_loops()
 	_test_cpu_never_idles()
+	_test_legal_move_highlights()
+	_test_aim_neighbor_highlights()
+	_test_diagonal_ray_exits_true_45()
 
 
 func expect(cond: bool, msg: String) -> void:
@@ -84,6 +93,8 @@ func prog(spec: String) -> Array:
 				kind = ArenaMatch.ActionKind.FIREBALL
 			"W":
 				kind = ArenaMatch.ActionKind.WINDWALL
+			"T":
+				kind = ArenaMatch.ActionKind.SPEAR_STRIKE
 			_:
 				push_error("bad kind")
 		var dir := Vector2i.ZERO
@@ -262,6 +273,27 @@ func _test_dead_skip_later_slots() -> void:
 	expect(m.hp[0] == 18, "P2 Shuriken (Normal) hit before the Punch (Slow)")
 
 
+func _test_same_tier_snapshot_combat() -> void:
+	var m := ArenaMatch.new()
+	m.owned[0].append(ArenaMatch.ActionKind.FLYING_KICK)
+	m.owned[1].append(ArenaMatch.ActionKind.FROST_RING)
+	m.positions[0] = Vector2i(2, 2) # C3
+	m.positions[1] = Vector2i(2, 3) # C4
+	m.play_programmed_round(filled("K N", "R"))
+	expect(m.positions[0] == Vector2i(2, 1), "kick still steps north to C2")
+	expect(m.hp[0] == 18, "Frost uses the pre-Slow snapshot, so it still hits the kicker")
+
+
+func _test_normal_mutual_shuriken() -> void:
+	var m := ArenaMatch.new()
+	m.hp[0] = 2
+	m.hp[1] = 2
+	m.positions[0] = Vector2i(0, 2)
+	m.positions[1] = Vector2i(4, 2)
+	m.play_programmed_round(filled("S E", "S W"))
+	expect(not m.alive[0] and not m.alive[1], "same-tier shots both apply; mutual KO is allowed")
+
+
 func _test_win_last_player() -> void:
 	var m := ArenaMatch.new()
 	m.hp[0] = 4
@@ -402,7 +434,16 @@ func _test_flying_kick() -> void:
 	m.positions[1] = Vector2i(5, 2) # F3 against east wall
 	m.play_programmed_round(filled("K E"))
 	expect(m.positions[0] == Vector2i(4, 2), "blocked push-kick stays put")
-	expect(m.hp[1] == 18, "wall-fail kick still hits the adjacent occupant")
+	expect(m.positions[1] == Vector2i(5, 2), "wall-fail kick does not push")
+	expect(m.hp[1] == 18, "wall-fail kick still hits the adjacent target")
+	m = ArenaMatch.new()
+	m.owned[0].append(ArenaMatch.ActionKind.FLYING_KICK)
+	m.positions[0] = Vector2i(0, 2) # A3
+	m.positions[1] = Vector2i(1, 2) # B3 adjacent
+	m.play_programmed_round(filled("K E"))
+	expect(m.positions[0] == Vector2i(1, 2), "kicker takes the vacated tile")
+	expect(m.positions[1] == Vector2i(2, 2), "adjacent target is pushed like a Move")
+	expect(m.hp[1] == 18, "damage lands on whoever is adjacent after the push")
 
 
 func _test_frost_ring() -> void:
@@ -413,9 +454,51 @@ func _test_frost_ring() -> void:
 	m.positions[2] = Vector2i(3, 2) # D3
 	m.positions[3] = Vector2i(5, 5) # F6 out of ring
 	m.play_programmed_round(filled("R"))
-	expect(m.hp[1] == 19, "frost hits adjacent C4")
-	expect(m.hp[2] == 19, "frost hits adjacent D3")
+	expect(m.hp[1] == 18, "frost hits adjacent C4")
+	expect(m.hp[2] == 18, "frost hits adjacent D3")
 	expect(m.hp[3] == 20, "frost does not hit F6")
+
+
+func _test_spear_strike() -> void:
+	var tiles := ArenaMatch.spear_tiles(Vector2i(2, 2), ArenaMatch.DIR_E)
+	expect(tiles.size() == 2, "interior east spear checks two tiles")
+	expect(tiles[0] == Vector2i(3, 2) and tiles[1] == Vector2i(4, 2), "east spear is +1 then +2")
+	expect(ArenaMatch.spear_tiles(Vector2i(0, 2), ArenaMatch.DIR_W).is_empty(), "off-grid first tile yields no strike")
+	var edge := ArenaMatch.spear_tiles(Vector2i(4, 2), ArenaMatch.DIR_E)
+	expect(edge.size() == 1 and edge[0] == Vector2i(5, 2), "near-edge spear still checks the on-grid first tile")
+	var m := ArenaMatch.new()
+	m.owned[0].append(ArenaMatch.ActionKind.SPEAR_STRIKE)
+	m.positions[0] = Vector2i(1, 2) # B3
+	m.positions[1] = Vector2i(2, 2) # C3 range 1
+	m.positions[2] = Vector2i(3, 2) # D3 range 2
+	m.positions[3] = Vector2i(4, 2) # E3 beyond
+	m.play_programmed_round(filled("T E"))
+	expect(m.hp[1] == 17, "spear deals 3 at range 1")
+	expect(m.hp[2] == 17, "spear deals 3 at range 2 independently")
+	expect(m.hp[3] == 20, "spear does not continue past range 2")
+	m = ArenaMatch.new()
+	m.owned[0].append(ArenaMatch.ActionKind.SPEAR_STRIKE)
+	m.positions[0] = Vector2i(1, 2)
+	m.positions[1] = Vector2i(3, 2) # only range 2 occupied
+	m.play_programmed_round(filled("T E"))
+	expect(m.hp[1] == 17, "empty range-1 still hits range 2")
+	m = ArenaMatch.new()
+	m.owned[0].append(ArenaMatch.ActionKind.SPEAR_STRIKE)
+	m.owned[1].append(ArenaMatch.ActionKind.WINDWALL)
+	m.positions[0] = Vector2i(1, 2)
+	m.positions[1] = Vector2i(3, 2)
+	m.play_programmed_round(filled("T E", "W W"))
+	expect(m.hp[1] == 17, "Windwall does not block Spear Strike")
+	m = ArenaMatch.new()
+	m.owned[0].append(ArenaMatch.ActionKind.SPEAR_STRIKE)
+	m.positions[0] = Vector2i(0, 2)
+	m.play_programmed_round(filled("T W"))
+	expect(m.hp[0] == 20, "off-grid first tile is a full whiff, not a self-hit")
+	expect(m.alive[0], "west-from-A-file spear is legal but empty")
+	var offers_ok := ArenaMatch.ActionKind.SPEAR_STRIKE in ArenaMatch.ACQUIRABLE
+	expect(offers_ok, "Spear Strike is in the level-up pool")
+	expect(ArenaMatch.speed_of(ArenaMatch.ActionKind.SPEAR_STRIKE) == ArenaMatch.SpeedTier.SLOW, "Spear Strike is Slow")
+	expect(not ArenaMatch.is_projectile(ArenaMatch.ActionKind.SPEAR_STRIKE), "Spear Strike is not a projectile")
 
 
 func _test_fireball_splash() -> void:
@@ -449,7 +532,92 @@ func _test_windwall_reflects_projectile() -> void:
 	m.positions[0] = Vector2i(2, 2)
 	m.positions[1] = Vector2i(2, 3)
 	m.play_programmed_round(filled("R", "W N"))
-	expect(m.hp[1] == 19, "Windwall does not block Frost Ring")
+	expect(m.hp[1] == 18, "Windwall does not block Frost Ring")
+
+
+func _test_windwall_reflect_playback_legs() -> void:
+	var m := ArenaMatch.new()
+	m.owned[1].append(ArenaMatch.ActionKind.WINDWALL)
+	m.positions[0] = Vector2i(0, 2)
+	m.positions[1] = Vector2i(4, 2)
+	m.phase = ArenaMatch.Phase.DECLARE
+	m.programs.clear()
+	expect(m.submit_program(0, prog("S E")) == "", "p1 shuriken")
+	expect(m.submit_program(1, prog("W W")) == "", "p2 windwall")
+	expect(m.submit_program(2, idle()) == "", "p3 idle")
+	expect(m.submit_program(3, idle()) == "", "p4 idle")
+	m.begin_reveal()
+	var inbound: Dictionary = {}
+	var bounce: Dictionary = {}
+	var n := 0
+	while m.phase == ArenaMatch.Phase.REVEAL or m.phase == ArenaMatch.Phase.RESOLVING:
+		var fx := m.resolve_next_action()
+		n += 1
+		if str(fx.get("kind", "")) == "shuriken" and bool(fx.get("blocked", false)):
+			inbound = fx
+		elif str(fx.get("kind", "")) == "shuriken" and not inbound.is_empty() and bounce.is_empty():
+			bounce = fx
+			break
+		if n > 80:
+			expect(false, "reflect playback step-through stuck")
+			return
+	expect(not inbound.is_empty(), "inbound blocked leg is played")
+	expect(inbound.get("dir") == ArenaMatch.DIR_E, "inbound travels the original east throw")
+	expect(inbound.get("origin") == Vector2i(0, 2), "inbound starts at the thrower")
+	expect(int(inbound.get("wall_player", -1)) == 1, "impact is on the Windwall holder")
+	expect(not bounce.is_empty(), "reflected travel is a separate playback leg")
+	expect(bounce.get("dir") == ArenaMatch.DIR_W, "reflect fires opposite the inbound travel")
+	expect(bounce.get("origin") == Vector2i(4, 2), "reflect starts at the wall tile, not hardcoded to the thrower")
+	expect(int(bounce.get("hit_player", -1)) == 0, "this setup's reverse path does hit the thrower")
+	var bounce_tiles: Array = bounce.get("tiles", [])
+	expect(bounce_tiles.size() > 0, "reflected ray has a real path")
+	expect(bounce_tiles[bounce_tiles.size() - 1] == Vector2i(0, 2), "bounce stops on the occupant of the reverse line")
+
+
+func _test_windwall_lasts_until_cleanup() -> void:
+	var m := ArenaMatch.new()
+	m.owned[1].append(ArenaMatch.ActionKind.WINDWALL)
+	m.positions[0] = Vector2i(0, 2)
+	m.positions[1] = Vector2i(4, 2)
+	m.phase = ArenaMatch.Phase.DECLARE
+	m.programs.clear()
+	expect(m.submit_program(0, prog("S E")) == "", "p1 shuriken")
+	expect(m.submit_program(1, prog("W W")) == "", "p2 windwall")
+	expect(m.submit_program(2, idle()) == "", "p3 idle")
+	expect(m.submit_program(3, idle()) == "", "p4 idle")
+	m.begin_reveal()
+	var n := 0
+	var saw_cover := false
+	while m.phase == ArenaMatch.Phase.REVEAL or m.phase == ArenaMatch.Phase.RESOLVING:
+		m.resolve_next_action()
+		n += 1
+		if m.windwall_incoming[1].size() == 3:
+			saw_cover = true
+			expect(ArenaMatch.DIR_W in m.windwall_incoming[1], "west cover")
+			expect(ArenaMatch.DIR_NW in m.windwall_incoming[1], "nw cover")
+			expect(ArenaMatch.DIR_SW in m.windwall_incoming[1], "sw cover")
+		if m.awaiting_cleanup:
+			expect(m.windwall_incoming[1].size() == 3, "windwall still up at end of resolution")
+			m.resolve_next_action()
+			break
+		if n > 80:
+			expect(false, "windwall duration step-through stuck")
+			return
+	expect(saw_cover, "windwall cover was applied during Instant")
+	expect(m.windwall_incoming[1].is_empty(), "windwall clears at cleanup")
+
+
+func _test_uncontested_moves_all_apply() -> void:
+	var m := ArenaMatch.new()
+	m.positions[0] = Vector2i(0, 2)
+	m.positions[1] = Vector2i(5, 2)
+	m.positions[2] = Vector2i(2, 0)
+	m.positions[3] = Vector2i(2, 5)
+	m.play_programmed_round(filled("M E", "M W", "M S", "M N"))
+	expect(m.positions[0] == Vector2i(1, 2), "p1 uncontested east")
+	expect(m.positions[1] == Vector2i(4, 2), "p2 uncontested west")
+	expect(m.positions[2] == Vector2i(2, 1), "p3 uncontested south")
+	expect(m.positions[3] == Vector2i(2, 4), "p4 uncontested north")
 
 
 func _cpu_plan(m: ArenaMatch, id: int) -> Array:
@@ -631,6 +799,59 @@ func _test_cpu_edge_does_not_walk_into_wall() -> void:
 	expect(plan[0].kind == ArenaMatch.ActionKind.MOVE, "attacks on cooldown: Move")
 	expect(plan[0].dir != ArenaMatch.DIR_E, "flee/stand must not treat off-board east as farther")
 	expect(ArenaMatch.in_bounds(m.positions[0] + plan[0].dir), "least-bad Move is still on the board")
+
+
+func _has_tile(tiles: Array[Vector2i], pos: Vector2i) -> bool:
+	return pos in tiles
+
+
+func _test_legal_move_highlights() -> void:
+	var edge := ArenaMatch.move_destinations(Vector2i(0, 4))
+	expect(edge.size() == 3, "A5 Move has three on-board orthogonal tiles")
+	expect(_has_tile(edge, Vector2i(0, 3)), "A5 can step north")
+	expect(_has_tile(edge, Vector2i(0, 5)), "A5 can step south")
+	expect(_has_tile(edge, Vector2i(1, 4)), "A5 can step east")
+	expect(not _has_tile(edge, Vector2i(-1, 4)), "A5 cannot step off the west edge")
+	var corner := ArenaMatch.move_destinations(Vector2i(0, 0))
+	expect(corner.size() == 2, "A1 Move has only east and south")
+	expect(_has_tile(corner, Vector2i(1, 0)), "A1 east")
+	expect(_has_tile(corner, Vector2i(0, 1)), "A1 south")
+	var mid := ArenaMatch.move_destinations(Vector2i(2, 2))
+	expect(mid.size() == 4, "interior Move has four orthogonal tiles")
+
+
+func _test_aim_neighbor_highlights() -> void:
+	var mid := ArenaMatch.aim_neighbors(Vector2i(2, 2))
+	expect(mid.size() == 8, "interior aim shows all eight neighbors")
+	var corner := ArenaMatch.aim_neighbors(Vector2i(0, 0))
+	expect(corner.size() == 3, "A1 aim only highlights on-board neighbors")
+	expect(_has_tile(corner, Vector2i(1, 0)), "A1 east")
+	expect(_has_tile(corner, Vector2i(1, 1)), "A1 southeast")
+	expect(_has_tile(corner, Vector2i(0, 1)), "A1 south")
+	var edge := ArenaMatch.aim_neighbors(Vector2i(0, 4))
+	expect(edge.size() == 5, "A5 aim has five on-board neighbors")
+
+
+func _test_diagonal_ray_exits_true_45() -> void:
+	var board0 := Vector2.ZERO
+	var board1 := Vector2(6, 6)
+	# A5 center (0.5, 4.5) SW: true exit is left edge at y=5, not A6's left midpoint (0, 5.5).
+	var sw := ArenaMatch.ray_rect_exit(Vector2(0.5, 4.5), Vector2i(-1, 1), board0, board1)
+	expect(is_equal_approx(sw.x, 0.0), "A5 SW exits at the left edge")
+	expect(is_equal_approx(sw.y, 5.0), "A5 SW stays on the 45° line (y=5), not A6 midpoint")
+	# B1 center (1.5, 0.5) NW: true exit is top edge at x=1, not A1's top midpoint (0.5, 0).
+	var nw := ArenaMatch.ray_rect_exit(Vector2(1.5, 0.5), Vector2i(-1, -1), board0, board1)
+	expect(is_equal_approx(nw.x, 1.0), "B1 NW exits between A and B")
+	expect(is_equal_approx(nw.y, 0.0), "B1 NW exits at the top edge")
+	# Interior NE from C4 (2.5, 3.5) runs to the north or east edge on 45°.
+	var ne := ArenaMatch.ray_rect_exit(Vector2(2.5, 3.5), Vector2i(1, -1), board0, board1)
+	expect(is_equal_approx(ne.x - 2.5, 3.5 - ne.y), "C4 NE remains 45° to the boundary")
+	expect(ne.x <= 6.0 and ne.y >= 0.0, "C4 NE exit is on the board rectangle")
+	# Orthogonal north from B1 must still hit the top of column B.
+	var n := ArenaMatch.ray_rect_exit(Vector2(1.5, 0.5), Vector2i(0, -1), board0, board1)
+	expect(is_equal_approx(n.x, 1.5) and is_equal_approx(n.y, 0.0), "orthogonal N is unchanged")
+
+
 
 
 

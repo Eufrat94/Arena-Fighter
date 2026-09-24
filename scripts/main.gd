@@ -2,7 +2,7 @@ extends Control
 
 const PlanBar = preload("res://scripts/plan_bar.gd")
 const CpuPlanner = preload("res://scripts/cpu_planner.gd")
-const ACTION_BEAT := 1.0
+const ACTION_STAGGER := 0.45
 
 const PLAYER_COLORS := [
 	Color("e85d4c"),
@@ -30,8 +30,10 @@ var priority_label: RichTextLabel
 var stage_label: Label
 var plan_bar: PlanBar
 var level_panel: VBoxContainer
+var level_header: Label
 var level_title: Label
 var level_choices: VBoxContainer
+var right_help: Label
 var anim_lock := false
 var autoplaying := false
 var fx_timer: Timer
@@ -49,7 +51,8 @@ var right_panel: VBoxContainer
 
 const LAYOUT_EDGE := 16.0
 const LAYOUT_GAP := 16.0
-const PRIORITY_H := 72.0
+const PRIORITY_H := 56.0
+const DECLARE_HINT := "Keys 1–N or click an icon, then click a highlighted tile. Empty lock-in or timeout is Pass."
 
 
 func _ready() -> void:
@@ -74,8 +77,7 @@ func _process(_delta: float) -> void:
 		pause_btn.visible = true
 	var left := _declare_time_left()
 	if timer_label:
-		var suffix := "  ·  paused" if timer_paused else ""
-		timer_label.text = "Decide in %d s%s" % [ceili(maxf(0.0, left)), suffix]
+		timer_label.text = "Decide in %d s" % ceili(maxf(0.0, left))
 		timer_label.add_theme_color_override("font_color", Color("f4a261") if left > 4.0 or timer_paused else Color("e85d4c"))
 	if not timer_paused and left <= 0.0 and not anim_lock:
 		_on_submit()
@@ -116,14 +118,47 @@ func _on_toggle_timer_pause() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
-	if event.keycode != KEY_SPACE:
-		return
 	if game.phase != ArenaMatch.Phase.DECLARE or autoplaying or anim_lock:
 		return
 	if declaring_player < 0 or is_cpu[declaring_player]:
 		return
+	if event.keycode == KEY_ESCAPE:
+		if board:
+			board.clear_arm()
+		_refresh()
+		get_viewport().set_input_as_handled()
+		return
+	var hot := _hotkey_index(event.keycode)
+	if hot >= 0:
+		_try_arm_hotkey(hot)
+		get_viewport().set_input_as_handled()
+		return
+	if event.keycode != KEY_SPACE:
+		return
 	_on_submit()
 	get_viewport().set_input_as_handled()
+
+
+func _hotkey_index(keycode: int) -> int:
+	if keycode >= KEY_1 and keycode <= KEY_9:
+		return keycode - KEY_1
+	if keycode >= KEY_KP_1 and keycode <= KEY_KP_9:
+		return keycode - KEY_KP_1
+	return -1
+
+
+func _try_arm_hotkey(index: int) -> void:
+	if declaring_player < 0 or game == null:
+		return
+	var kinds: Array = game.owned[declaring_player]
+	if index < 0 or index >= kinds.size():
+		return
+	var kind: ArenaMatch.ActionKind = kinds[index]
+	if not game.ability_ready(declaring_player, kind):
+		draft_label.text = "That ability is on cooldown."
+		return
+	if board and board.arm_ability(int(kind)):
+		draft_label.text = DECLARE_HINT
 
 
 func _build_ui() -> void:
@@ -210,16 +245,20 @@ func _build_ui() -> void:
 	board.ability_clicked.connect(_on_ability_clicked)
 	board.drag_cancelled.connect(_on_drag_cancelled)
 	board.plan_slot_clicked.connect(_clear_slot)
+	board.armed_changed.connect(_on_armed_changed)
 	add_child(board)
-
-	plan_bar = PlanBar.new()
-	plan_bar.slot_clicked.connect(_clear_slot)
-	plan_bar.submit_pressed.connect(_on_submit)
-	add_child(plan_bar)
 
 	right_panel = VBoxContainer.new()
 	right_panel.add_theme_constant_override("separation", 10)
+	right_panel.mouse_filter = Control.MOUSE_FILTER_PASS
 	add_child(right_panel)
+
+	right_help = Label.new()
+	right_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	right_help.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_help.add_theme_color_override("font_color", Color("8b93a7"))
+	right_help.text = "Pass-and-play, one action each turn. Keys 1–N arm the rail (Move is 1). Click a highlighted tile to commit, or drag as before. Spacebar locks in. Empty lock-in or a timeout is Pass. Click the plan circle to clear. Escape cancels an armed ability."
+	right_panel.add_child(right_help)
 
 	declare_panel = VBoxContainer.new()
 	declare_panel.add_theme_constant_override("separation", 8)
@@ -242,25 +281,43 @@ func _build_ui() -> void:
 	over_panel.add_child(_btn("New match", _on_new_match))
 
 	level_panel = VBoxContainer.new()
-	level_panel.add_theme_constant_override("separation", 10)
+	level_panel.add_theme_constant_override("separation", 8)
+	level_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	right_panel.add_child(level_panel)
+	level_header = Label.new()
+	level_header.text = "LEVEL UP"
+	level_header.add_theme_font_size_override("font_size", 28)
+	level_header.add_theme_color_override("font_color", Color("e8dcc4"))
+	level_panel.add_child(level_header)
 	level_title = Label.new()
 	level_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	level_title.add_theme_font_size_override("font_size", 20)
+	level_title.add_theme_font_size_override("font_size", 15)
 	level_title.add_theme_color_override("font_color", Color("f4a261"))
 	level_panel.add_child(level_title)
-	var level_hint := Label.new()
-	level_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	level_hint.add_theme_color_override("font_color", Color("8b93a7"))
-	level_hint.text = "Pick one ability. It is added permanently to your action set."
-	level_panel.add_child(level_hint)
 	level_choices = VBoxContainer.new()
 	level_choices.add_theme_constant_override("separation", 8)
+	level_choices.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	level_panel.add_child(level_choices)
+
+	pause_btn = Button.new()
+	pause_btn.text = "Pause"
+	pause_btn.tooltip_text = "Testing: freeze this player's declare countdown"
+	pause_btn.pressed.connect(_on_toggle_timer_pause)
+	pause_btn.custom_minimum_size = Vector2(0, 32)
+	pause_btn.size_flags_horizontal = Control.SIZE_FILL
+	pause_btn.mouse_filter = Control.MOUSE_FILTER_STOP
+	right_panel.add_child(pause_btn)
+
+	plan_bar = PlanBar.new()
+	plan_bar.slot_clicked.connect(_clear_slot)
+	plan_bar.submit_pressed.connect(_on_submit)
+	plan_bar.size_flags_horizontal = Control.SIZE_FILL
+	plan_bar.mouse_filter = Control.MOUSE_FILTER_STOP
+	right_panel.add_child(plan_bar)
 
 	fx_timer = Timer.new()
 	fx_timer.one_shot = true
-	fx_timer.wait_time = ACTION_BEAT
+	fx_timer.wait_time = ACTION_STAGGER
 	fx_timer.timeout.connect(_on_fx_done)
 	add_child(fx_timer)
 
@@ -275,33 +332,32 @@ func _layout_playfield() -> void:
 	var vh := size.y
 	if vw < 2.0 or vh < 2.0:
 		return
-	var lock_w := PlanBar.SUBMIT_W + 20.0
-	var lock_h: float = plan_bar.custom_minimum_size.y
-	var cell := BoardView.CELL_MAX
-	var max_board_h := vh - LAYOUT_EDGE * 2.0 - PRIORITY_H - LAYOUT_GAP
+	var left_w := 236.0
+	var right_w := maxf(220.0, PlanBar.SUBMIT_W + 20.0)
+	if priority_label:
+		priority_label.position = Vector2(LAYOUT_EDGE, LAYOUT_EDGE)
+		priority_label.size = Vector2(vw - LAYOUT_EDGE * 2.0, PRIORITY_H)
+	var right_x := vw - LAYOUT_EDGE - right_w
+	var right_y := LAYOUT_EDGE + PRIORITY_H + LAYOUT_GAP
+	right_panel.position = Vector2(right_x, right_y)
+	right_panel.size = Vector2(right_w, maxf(72.0, vh - LAYOUT_EDGE - right_y))
+	left_panel.position = Vector2(LAYOUT_EDGE, LAYOUT_EDGE + PRIORITY_H + LAYOUT_GAP)
+	left_panel.size = Vector2(left_w, vh - left_panel.position.y - LAYOUT_EDGE)
+	var avail_x0 := LAYOUT_EDGE + left_w + LAYOUT_GAP
+	var avail_y0 := LAYOUT_EDGE + PRIORITY_H + LAYOUT_GAP
+	var avail_x1 := right_x - LAYOUT_GAP
+	var avail_y1 := vh - LAYOUT_EDGE
+	var max_board_w := maxf(120.0, avail_x1 - avail_x0)
+	var max_board_h := maxf(120.0, avail_y1 - avail_y0)
+	var max_cell_w := (max_board_w - BoardView.PAD_LEFT - BoardView.PAD_RIGHT) / float(ArenaMatch.COLS)
 	var max_cell_h := (max_board_h - BoardView.PAD_TOP - BoardView.PAD_BOTTOM) / float(ArenaMatch.ROWS)
-	cell = clampf(minf(cell, max_cell_h), BoardView.CELL_MIN, BoardView.CELL_MAX)
+	var cell := clampf(minf(BoardView.CELL_MAX, minf(max_cell_w, max_cell_h)), BoardView.CELL_MIN, BoardView.CELL_MAX)
 	var board_w := BoardView.PAD_LEFT + cell * float(ArenaMatch.COLS) + BoardView.PAD_RIGHT
 	var board_h := BoardView.PAD_TOP + cell * float(ArenaMatch.ROWS) + BoardView.PAD_BOTTOM
-	var board_x := vw * 0.5 - board_w * 0.5
-	var stack_h := PRIORITY_H + LAYOUT_GAP + board_h
-	var stack_y := (vh - stack_h) * 0.5
-	var board_y := stack_y + PRIORITY_H + LAYOUT_GAP
+	var board_x := avail_x0 + (max_board_w - board_w) * 0.5
+	var board_y := avail_y0 + (max_board_h - board_h) * 0.5
 	board.position = Vector2(board_x, board_y)
 	board.size = Vector2(board_w, board_h)
-	if priority_label:
-		priority_label.position = Vector2(board_x, stack_y)
-		priority_label.size = Vector2(board_w, PRIORITY_H)
-	var grid_mid_y := board_y + BoardView.PAD_TOP + cell * float(ArenaMatch.ROWS) * 0.5
-	plan_bar.position = Vector2(board_x + board_w + LAYOUT_GAP, grid_mid_y - PlanBar.circle_local_y())
-	plan_bar.size = Vector2(lock_w, lock_h)
-	var left_w := maxf(200.0, board_x - LAYOUT_GAP - LAYOUT_EDGE)
-	left_panel.position = Vector2(LAYOUT_EDGE, LAYOUT_EDGE)
-	left_panel.size = Vector2(left_w, vh - LAYOUT_EDGE * 2.0)
-	var right_x := board_x + board_w + LAYOUT_GAP + lock_w + LAYOUT_GAP
-	var right_w := maxf(180.0, vw - LAYOUT_EDGE - right_x)
-	right_panel.position = Vector2(right_x, LAYOUT_EDGE)
-	right_panel.size = Vector2(right_w, vh - LAYOUT_EDGE * 2.0)
 
 
 func _fill_declare_panel() -> void:
@@ -310,30 +366,18 @@ func _fill_declare_panel() -> void:
 	handoff_label.add_theme_font_size_override("font_size", 18)
 	declare_panel.add_child(handoff_label)
 
-	var timer_row := HBoxContainer.new()
-	timer_row.add_theme_constant_override("separation", 12)
-	declare_panel.add_child(timer_row)
-
 	timer_label = Label.new()
 	timer_label.add_theme_font_size_override("font_size", 22)
 	timer_label.add_theme_color_override("font_color", Color("f4a261"))
-	timer_row.add_child(timer_label)
-
-	pause_btn = Button.new()
-	pause_btn.text = "Pause"
-	pause_btn.tooltip_text = "Testing: freeze this player's declare countdown"
-	pause_btn.pressed.connect(_on_toggle_timer_pause)
-	timer_row.add_child(pause_btn)
+	timer_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	timer_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	declare_panel.add_child(timer_label)
 
 	draft_label = Label.new()
 	draft_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	draft_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	draft_label.custom_minimum_size.y = 44
 	declare_panel.add_child(draft_label)
-
-	var hint := Label.new()
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_color_override("font_color", Color("8b93a7"))
-	hint.text = "Pass-and-play, one action each turn. Drag your token or the 1/Move icon to Move. Drag or click abilities under the board. Spacebar locks in. Empty lock-in or a timeout is Pass. Click the plan circle to clear."
-	declare_panel.add_child(hint)
 
 
 func _fill_resolve_panel() -> void:
@@ -364,6 +408,10 @@ func _on_tile_hovered(pos: Vector2i) -> void:
 		hover_label.text = "%s  ·  %s (%d HP)%s" % [ArenaMatch.tile_name(pos), ArenaMatch.PLAYER_NAMES[who], game.hp[who], extra]
 	else:
 		hover_label.text = "%s  ·  empty%s" % [ArenaMatch.tile_name(pos), extra]
+
+
+func _on_armed_changed(_kind: int) -> void:
+	pass
 
 
 func _on_move_dropped(dir: Vector2i) -> void:
@@ -404,10 +452,7 @@ func _queue_action(action: Dictionary) -> void:
 		draft_label.text = "You don't have %s yet." % ArenaMatch.kind_name(kind)
 		return
 	if not game.ability_ready(declaring_player, kind):
-		draft_label.text = "%s is on cooldown (%d turn(s) left)." % [
-			ArenaMatch.kind_name(kind),
-			game.cooldown_left(declaring_player, kind),
-		]
+		draft_label.text = "That ability is on cooldown."
 		return
 	var err := game.validate_action(action)
 	if err != "":
@@ -416,6 +461,8 @@ func _queue_action(action: Dictionary) -> void:
 	if draft.is_empty():
 		_reset_draft()
 	draft[0] = action
+	if board:
+		board.clear_arm()
 	_refresh()
 
 
@@ -480,6 +527,12 @@ func _fx_is_watchable(fx: Dictionary) -> bool:
 	return kind != "" and kind != "cleanup" and kind != "slot_end" and kind != "skip"
 
 
+func _fx_wait(fx: Dictionary) -> float:
+	if bool(fx.get("blocked", false)):
+		return ACTION_STAGGER + 0.12
+	return ACTION_STAGGER
+
+
 func _auto_step() -> void:
 	if not autoplaying:
 		return
@@ -497,7 +550,7 @@ func _auto_step() -> void:
 			board.play_fx(fx)
 			anim_lock = true
 			if fx_timer:
-				fx_timer.wait_time = ACTION_BEAT
+				fx_timer.wait_time = _fx_wait(fx)
 				fx_timer.start()
 			return
 	_stop_autoplay()
@@ -583,6 +636,18 @@ func _refresh() -> void:
 	if leveling or declaring:
 		_kick_cpu()
 
+	if right_help:
+		if leveling:
+			right_help.text = "Pick one ability. It is added permanently to your action set."
+		elif declaring:
+			right_help.text = "Pass-and-play, one action each turn. Your rail is the live one; the other three sides show everyone’s kits and cooldowns. Keys 1–N arm your rail (Move is 1). Click a highlighted tile to commit, or drag as before. Spacebar locks in. Empty lock-in or a timeout is Pass. Click the plan circle to clear. Escape cancels an armed ability."
+		elif resolving:
+			right_help.text = "Watch each action play in priority order. Combat in a speed tier is simultaneous underneath."
+		elif game.phase == ArenaMatch.Phase.MATCH_OVER:
+			right_help.text = "This match is over. Start a new one when you are ready."
+		else:
+			right_help.text = ""
+
 	if declaring:
 		_sync_declare_turn()
 		handoff_label.add_theme_color_override("font_color", PLAYER_COLORS[declaring_player])
@@ -593,19 +658,18 @@ func _refresh() -> void:
 			if pause_btn:
 				pause_btn.visible = false
 			if plan_bar:
+				plan_bar.visible = false
 				plan_bar.set_engaged(false)
 			if board:
 				board.set_declare_context(false, -1, false)
 		else:
 			handoff_label.text = ""
-			if _next_open_slot() < 0:
-				draft_label.text = "Action queued. Lock it in, or drag again to replace it."
-			else:
-				draft_label.text = "Choose Move or an ability — or Pass / stay. Timer is 15 seconds."
+			draft_label.text = DECLARE_HINT
 			if pause_btn:
 				pause_btn.visible = true
 				pause_btn.text = "Resume" if timer_paused else "Pause"
 			if plan_bar:
+				plan_bar.visible = true
 				plan_bar.set_engaged(true)
 				plan_bar.set_plan(declaring_player, draft, true)
 			if board:
@@ -619,7 +683,10 @@ func _refresh() -> void:
 					_dimmed_kinds()
 				)
 	else:
+		if pause_btn:
+			pause_btn.visible = false
 		if plan_bar:
+			plan_bar.visible = false
 			plan_bar.set_engaged(false)
 		if board:
 			board.set_declare_context(false, -1, false)
@@ -785,6 +852,7 @@ func _dimmed_kinds() -> Array:
 		ArenaMatch.ActionKind.FROST_RING,
 		ArenaMatch.ActionKind.FIREBALL,
 		ArenaMatch.ActionKind.WINDWALL,
+		ArenaMatch.ActionKind.SPEAR_STRIKE,
 	]:
 		if not game.ability_ready(declaring_player, kind):
 			kinds.append(kind)
@@ -815,9 +883,40 @@ func _rebuild_level_choices() -> void:
 	for kind in game.level_offers:
 		var k: ArenaMatch.ActionKind = kind
 		var b := Button.new()
-		b.text = "%s  ·  %s" % [ArenaMatch.kind_name(k), _ability_blurb(k)]
+		b.text = "%s\n%s" % [ArenaMatch.kind_name(k), _ability_blurb(k)]
+		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.clip_text = false
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+		b.custom_minimum_size = Vector2(0, 56.0)
+		var icon := _kind_icon(k)
+		if icon:
+			b.icon = icon
+			b.expand_icon = false
+			b.add_theme_constant_override("icon_max_width", 28)
 		b.pressed.connect(_on_pick_level.bind(k))
 		level_choices.add_child(b)
+	# Keep the three rows compact so they stay on-screen under the help text.
+	level_choices.add_theme_constant_override("separation", 8)
+
+
+func _kind_icon(kind: ArenaMatch.ActionKind) -> Texture2D:
+	match kind:
+		ArenaMatch.ActionKind.HEAL:
+			return preload("res://icons/heal.png")
+		ArenaMatch.ActionKind.FLYING_KICK:
+			return preload("res://icons/kick.png")
+		ArenaMatch.ActionKind.FROST_RING:
+			return preload("res://icons/circle.png")
+		ArenaMatch.ActionKind.FIREBALL:
+			return preload("res://icons/fireball.png")
+		ArenaMatch.ActionKind.WINDWALL:
+			return preload("res://icons/windwall.png")
+		ArenaMatch.ActionKind.SPEAR_STRIKE:
+			return preload("res://icons/spear.png")
+		_:
+			return null
 
 
 func _ability_blurb(kind: ArenaMatch.ActionKind) -> String:
@@ -827,11 +926,13 @@ func _ability_blurb(kind: ArenaMatch.ActionKind) -> String:
 		ArenaMatch.ActionKind.FLYING_KICK:
 			return "Slow · step 1, then 2 dmg beyond"
 		ArenaMatch.ActionKind.FROST_RING:
-			return "Slow · 1 dmg to all 8 adjacent"
+			return "Slow · 2 dmg to all 8 adjacent"
 		ArenaMatch.ActionKind.FIREBALL:
 			return "Slow · ray 3 dmg + 1 splash"
 		ArenaMatch.ActionKind.WINDWALL:
 			return "Instant · reflect projectiles"
+		ArenaMatch.ActionKind.SPEAR_STRIKE:
+			return "Slow · 3 dmg at range 1 and 2"
 		_:
 			return ""
 
@@ -887,4 +988,3 @@ func _cpu_step() -> void:
 
 func _cpu_fallback() -> Array:
 	return [ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_N)]
-

@@ -14,6 +14,12 @@ const CIRCLE_TOP := 22.0
 const TEX_FOOT := preload("res://icons/foot.png")
 const TEX_FIST := preload("res://icons/fist.png")
 const TEX_SHURIKEN := preload("res://icons/shuriken.png")
+const TEX_KICK := preload("res://icons/kick.png")
+const TEX_FROST := preload("res://icons/circle.png")
+const TEX_FIREBALL := preload("res://icons/fireball.png")
+const TEX_WINDWALL := preload("res://icons/windwall.png")
+const TEX_HEAL := preload("res://icons/heal.png")
+const TEX_SPEAR := preload("res://icons/spear.png")
 
 var player_id: int = 0
 var draft: Array = []
@@ -30,7 +36,7 @@ const PLAYER_COLORS := [
 
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(SUBMIT_W + 20.0, R * 2.0 + GAP * 2.0 + SUBMIT_H + 44.0)
+	custom_minimum_size = Vector2(SUBMIT_W + 20.0, CIRCLE_TOP + R * 2.0 + GAP + SUBMIT_H + 8.0)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 
@@ -102,23 +108,19 @@ func _draw_slot_circle(i: int) -> void:
 		var action: Dictionary = draft[i]
 		var kind: ArenaMatch.ActionKind = action.kind
 		var dir: Vector2i = action.dir
-		match kind:
-			ArenaMatch.ActionKind.MOVE:
-				_draw_icon(TEX_FOOT, c, ICON_SIZE)
-			ArenaMatch.ActionKind.SHURIKEN:
-				_draw_icon(TEX_SHURIKEN, c, ICON_SIZE)
-			ArenaMatch.ActionKind.PUNCH:
-				_draw_icon(TEX_FIST, c, ICON_SIZE)
-			_:
-				draw_string(
-					ThemeDB.fallback_font,
-					c + Vector2(-8, 8),
-					ArenaMatch.kind_letter(kind),
-					HORIZONTAL_ALIGNMENT_LEFT,
-					-1,
-					22,
-					Color.WHITE
-				)
+		var tex := _tex_for_kind(kind)
+		if tex:
+			_draw_icon(tex, c, ICON_SIZE)
+		else:
+			draw_string(
+				ThemeDB.fallback_font,
+				c + Vector2(-8, 8),
+				ArenaMatch.kind_letter(kind),
+				HORIZONTAL_ALIGNMENT_LEFT,
+				-1,
+				22,
+				Color.WHITE
+			)
 		if ArenaMatch.needs_aim(kind):
 			_draw_dir_arrow(c, dir, Color.WHITE)
 		else:
@@ -173,3 +175,27 @@ func _draw_dir_arrow(c: Vector2, dir: Vector2i, col: Color) -> void:
 func _draw_icon(tex: Texture2D, center: Vector2, px: float) -> void:
 	var r := Rect2(center - Vector2(px, px) * 0.5, Vector2(px, px))
 	draw_texture_rect(tex, r, false)
+
+
+func _tex_for_kind(kind: ArenaMatch.ActionKind) -> Texture2D:
+	match kind:
+		ArenaMatch.ActionKind.MOVE:
+			return TEX_FOOT
+		ArenaMatch.ActionKind.SHURIKEN:
+			return TEX_SHURIKEN
+		ArenaMatch.ActionKind.PUNCH:
+			return TEX_FIST
+		ArenaMatch.ActionKind.FLYING_KICK:
+			return TEX_KICK
+		ArenaMatch.ActionKind.FROST_RING:
+			return TEX_FROST
+		ArenaMatch.ActionKind.FIREBALL:
+			return TEX_FIREBALL
+		ArenaMatch.ActionKind.WINDWALL:
+			return TEX_WINDWALL
+		ArenaMatch.ActionKind.HEAL:
+			return TEX_HEAL
+		ArenaMatch.ActionKind.SPEAR_STRIKE:
+			return TEX_SPEAR
+		_:
+			return null

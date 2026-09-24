@@ -207,6 +207,14 @@ func _finishing_attack(origin: Vector2i) -> Dictionary:
 				return ArenaMatch.make_action(ArenaMatch.ActionKind.PUNCH, d)
 			if _can(ArenaMatch.ActionKind.FLYING_KICK) and ArenaMatch.FLYING_KICK_DAMAGE >= hp_left:
 				return ArenaMatch.make_action(ArenaMatch.ActionKind.FLYING_KICK, d)
+		if dist <= ArenaMatch.SPEAR_RANGE and _can(ArenaMatch.ActionKind.SPEAR_STRIKE):
+			var spear_ok := false
+			for t in ArenaMatch.spear_tiles(origin, d):
+				if t == there:
+					spear_ok = true
+					break
+			if spear_ok and ArenaMatch.SPEAR_DAMAGE >= hp_left:
+				return ArenaMatch.make_action(ArenaMatch.ActionKind.SPEAR_STRIKE, d)
 		var traced: Dictionary = game.preview_ray(origin, d, ArenaMatch.COLS + ArenaMatch.ROWS, cpu_id)
 		if traced.target != id:
 			continue
@@ -242,6 +250,14 @@ func _best_direct_attack(origin: Vector2i) -> Dictionary:
 				options.append({"action": ArenaMatch.make_action(ArenaMatch.ActionKind.FLYING_KICK, d), "rank": 3})
 			if _can(ArenaMatch.ActionKind.PUNCH):
 				options.append({"action": ArenaMatch.make_action(ArenaMatch.ActionKind.PUNCH, d), "rank": 2})
+		if dist <= ArenaMatch.SPEAR_RANGE and _can(ArenaMatch.ActionKind.SPEAR_STRIKE):
+			var n := 0
+			for t in ArenaMatch.spear_tiles(origin, d):
+				var who := game.player_at(t)
+				if who >= 0 and who != cpu_id:
+					n += 1
+			if n > 0:
+				options.append({"action": ArenaMatch.make_action(ArenaMatch.ActionKind.SPEAR_STRIKE, d), "rank": 2 + n})
 		if dist >= 1:
 			var traced: Dictionary = game.preview_ray(origin, d, ArenaMatch.COLS + ArenaMatch.ROWS, cpu_id)
 			if traced.target != id:
@@ -530,6 +546,7 @@ func _sum_foe_dist(pos: Vector2i) -> int:
 static func preferred_level_up(offers: Array) -> ArenaMatch.ActionKind:
 	var order := [
 		ArenaMatch.ActionKind.FIREBALL,
+		ArenaMatch.ActionKind.SPEAR_STRIKE,
 		ArenaMatch.ActionKind.FLYING_KICK,
 		ArenaMatch.ActionKind.FROST_RING,
 		ArenaMatch.ActionKind.WINDWALL,
