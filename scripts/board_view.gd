@@ -699,26 +699,6 @@ func _draw() -> void:
 				11,
 				Color("6b7385")
 			)
-	for x in ArenaMatch.COLS:
-		draw_string(
-			ThemeDB.fallback_font,
-			orig + Vector2(x * cell + cell * 0.38, -18),
-			ArenaMatch.COL_LETTERS[x],
-			HORIZONTAL_ALIGNMENT_LEFT,
-			-1,
-			16,
-			Color("d6c7a1")
-		)
-	for y in ArenaMatch.ROWS:
-		draw_string(
-			ThemeDB.fallback_font,
-			Vector2(orig.x - 18, orig.y + y * cell + cell * 0.55),
-			str(y + 1),
-			HORIZONTAL_ALIGNMENT_LEFT,
-			-1,
-			16,
-			Color("d6c7a1")
-		)
 	_draw_fx_under()
 	for i in ArenaMatch.PLAYER_COUNT:
 		if not match_ref.alive[i]:
@@ -940,18 +920,7 @@ func _draw_player_rail(player_id: int) -> void:
 	var armed := _current_armed() if interactive else -1
 	var alive := match_ref.alive[player_id]
 	var tag := _rail_pos_for(player_id, 0)
-	var tag_off := Vector2(-52, 6)
-	if player_id == 1 or player_id == 3:
-		tag_off = Vector2(-10, -ICON_R - 18)
-	draw_string(
-		ThemeDB.fallback_font,
-		tag + tag_off,
-		ArenaMatch.PLAYER_NAMES[player_id],
-		HORIZONTAL_ALIGNMENT_LEFT,
-		-1,
-		13,
-		accent if alive else Color("6b7385")
-	)
+	_draw_rail_stats(player_id, tag, accent, alive)
 	for i in kinds.size():
 		var kind: ArenaMatch.ActionKind = kinds[i]
 		var s := _rail_pos_for(player_id, i)
@@ -993,6 +962,20 @@ func _draw_player_rail(player_id: int) -> void:
 			)
 		if cd > 0:
 			_draw_cd_badge(s, cd)
+
+
+func _draw_rail_stats(player_id: int, first_icon: Vector2, accent: Color, alive: bool) -> void:
+	var name_col := accent if alive else Color("6b7385")
+	var info_col := Color("c5c9d4") if alive else Color("6b7385")
+	var rail_name: String = ArenaMatch.PLAYER_NAMES[player_id]
+	var info := "eliminated"
+	if alive and match_ref != null:
+		info = "HP %d   XP %d" % [match_ref.hp[player_id], match_ref.xp[player_id]]
+	var pos := first_icon + Vector2(-78, -8)
+	if player_id == 1 or player_id == 3:
+		pos = first_icon + Vector2(-16, -ICON_R - 34)
+	draw_string(ThemeDB.fallback_font, pos, rail_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, name_col)
+	draw_string(ThemeDB.fallback_font, pos + Vector2(0, 14), info, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, info_col)
 
 
 func _draw_cd_badge(icon_center: Vector2, turns: int) -> void:

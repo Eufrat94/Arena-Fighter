@@ -18,7 +18,6 @@ var draft_owner: int = -1
 
 var board: BoardView
 var phase_label: Label
-var status_box: VBoxContainer
 var log_label: RichTextLabel
 var declare_panel: VBoxContainer
 var resolve_panel: VBoxContainer
@@ -27,6 +26,7 @@ var draft_label: Label
 var handoff_label: Label
 var hover_label: Label
 var priority_label: RichTextLabel
+var seat_summary: RichTextLabel
 var stage_label: Label
 var plan_bar: PlanBar
 var level_panel: VBoxContainer
@@ -169,7 +169,7 @@ func _build_ui() -> void:
 	add_child(bg)
 
 	left_panel = VBoxContainer.new()
-	left_panel.add_theme_constant_override("separation", 8)
+	left_panel.add_theme_constant_override("separation", 6)
 	add_child(left_panel)
 
 	var title := Label.new()
@@ -183,35 +183,38 @@ func _build_ui() -> void:
 	subtitle.add_theme_color_override("font_color", Color("8b93a7"))
 	left_panel.add_child(subtitle)
 
+	var seats_caption := Label.new()
+	seats_caption.text = "Seats:"
+	seats_caption.add_theme_color_override("font_color", Color("8b93a7"))
+	left_panel.add_child(seats_caption)
+
+	var seat_grid := VBoxContainer.new()
+	seat_grid.add_theme_constant_override("separation", 2)
+	left_panel.add_child(seat_grid)
+	control_checks.clear()
+	for row in 2:
+		var seat_row := HBoxContainer.new()
+		seat_row.add_theme_constant_override("separation", 12)
+		seat_grid.add_child(seat_row)
+		for col in 2:
+			var i := row * 2 + col
+			var cb := CheckBox.new()
+			cb.text = str(ArenaMatch.PLAYER_NAMES[i])
+			cb.button_pressed = is_cpu[i]
+			cb.tooltip_text = "Checked = CPU"
+			cb.add_theme_color_override("font_color", PLAYER_COLORS[i])
+			cb.toggled.connect(_on_cpu_toggled.bind(i))
+			seat_row.add_child(cb)
+			control_checks.append(cb)
+
 	phase_label = Label.new()
 	phase_label.add_theme_font_size_override("font_size", 18)
 	phase_label.add_theme_color_override("font_color", Color("f4a261"))
 	left_panel.add_child(phase_label)
 
-	var control_row := HBoxContainer.new()
-	control_row.add_theme_constant_override("separation", 14)
-	left_panel.add_child(control_row)
-	var control_caption := Label.new()
-	control_caption.text = "Seats:"
-	control_caption.add_theme_color_override("font_color", Color("8b93a7"))
-	control_row.add_child(control_caption)
-	control_checks.clear()
-	for i in ArenaMatch.PLAYER_COUNT:
-		var cb := CheckBox.new()
-		cb.text = "%s CPU" % ArenaMatch.PLAYER_NAMES[i]
-		cb.button_pressed = is_cpu[i]
-		cb.add_theme_color_override("font_color", PLAYER_COLORS[i])
-		cb.toggled.connect(_on_cpu_toggled.bind(i))
-		control_row.add_child(cb)
-		control_checks.append(cb)
-
 	hover_label = Label.new()
 	hover_label.add_theme_color_override("font_color", Color("6b7385"))
 	left_panel.add_child(hover_label)
-
-	status_box = VBoxContainer.new()
-	status_box.add_theme_constant_override("separation", 4)
-	left_panel.add_child(status_box)
 
 	var log_title := Label.new()
 	log_title.text = "Resolution log"
@@ -220,8 +223,11 @@ func _build_ui() -> void:
 
 	log_label = RichTextLabel.new()
 	log_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	log_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	log_label.bbcode_enabled = true
 	log_label.scroll_following = true
+	log_label.scroll_active = true
+	log_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	log_label.custom_minimum_size.y = 140
 	left_panel.add_child(log_label)
 
@@ -236,6 +242,16 @@ func _build_ui() -> void:
 	priority_label.add_theme_font_size_override("bold_font_size", 26)
 	priority_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(priority_label)
+
+	seat_summary = RichTextLabel.new()
+	seat_summary.bbcode_enabled = true
+	seat_summary.fit_content = true
+	seat_summary.scroll_active = false
+	seat_summary.autowrap_mode = TextServer.AUTOWRAP_OFF
+	seat_summary.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	seat_summary.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	seat_summary.add_theme_font_size_override("normal_font_size", 14)
+	add_child(seat_summary)
 
 	board = BoardView.new()
 	board.match_ref = game
@@ -334,15 +350,19 @@ func _layout_playfield() -> void:
 		return
 	var left_w := 236.0
 	var right_w := maxf(220.0, PlanBar.SUBMIT_W + 20.0)
-	if priority_label:
-		priority_label.position = Vector2(LAYOUT_EDGE, LAYOUT_EDGE)
-		priority_label.size = Vector2(vw - LAYOUT_EDGE * 2.0, PRIORITY_H)
 	var right_x := vw - LAYOUT_EDGE - right_w
+	if priority_label:
+		var pri_x := LAYOUT_EDGE + left_w + LAYOUT_GAP
+		priority_label.position = Vector2(pri_x, LAYOUT_EDGE)
+		priority_label.size = Vector2(maxf(80.0, right_x - LAYOUT_GAP - pri_x), PRIORITY_H)
+	if seat_summary:
+		seat_summary.position = Vector2(right_x, LAYOUT_EDGE)
+		seat_summary.size = Vector2(right_w, PRIORITY_H)
 	var right_y := LAYOUT_EDGE + PRIORITY_H + LAYOUT_GAP
 	right_panel.position = Vector2(right_x, right_y)
 	right_panel.size = Vector2(right_w, maxf(72.0, vh - LAYOUT_EDGE - right_y))
-	left_panel.position = Vector2(LAYOUT_EDGE, LAYOUT_EDGE + PRIORITY_H + LAYOUT_GAP)
-	left_panel.size = Vector2(left_w, vh - left_panel.position.y - LAYOUT_EDGE)
+	left_panel.position = Vector2(LAYOUT_EDGE, LAYOUT_EDGE)
+	left_panel.size = Vector2(left_w, vh - LAYOUT_EDGE * 2.0)
 	var avail_x0 := LAYOUT_EDGE + left_w + LAYOUT_GAP
 	var avail_y0 := LAYOUT_EDGE + PRIORITY_H + LAYOUT_GAP
 	var avail_x1 := right_x - LAYOUT_GAP
@@ -793,43 +813,75 @@ func _rebuild_log() -> void:
 		var e: Dictionary = game.log_entries[i]
 		var slot: int = int(e.get("slot", -1))
 		var text: String = str(e.get("text", ""))
-		var escaped := text.replace("[", "[lb]").replace("]", "[rb]")
-		if slot >= 0 and slot <= 2:
-			var hex: String = SLOT_HEX[slot]
-			var is_active := game.phase == ArenaMatch.Phase.RESOLVING and slot == active_slot
-			if bool(e.get("header", false)):
-				if is_active:
-					bb += "[bgcolor=#2a2618][color=%s][b]▸ %s[/b][/color][/bgcolor]\n" % [hex, escaped]
+		var lines := _wrap_log_line(text)
+		for li in lines.size():
+			var escaped: String = lines[li].replace("[", "[lb]").replace("]", "[rb]")
+			var indent := "  " if li > 0 else ""
+			if slot >= 0 and slot <= 2:
+				var hex: String = SLOT_HEX[slot]
+				var is_active := game.phase == ArenaMatch.Phase.RESOLVING and slot == active_slot
+				if bool(e.get("header", false)) and li == 0:
+					if is_active:
+						bb += "[bgcolor=#2a2618][color=%s][b]▸ %s[/b][/color][/bgcolor]\n" % [hex, escaped]
+					else:
+						bb += "[color=#6b7385]%s[/color]\n" % escaped
+				elif is_active:
+					bb += "[color=%s]|[/color] %s%s\n" % [hex, indent, escaped]
 				else:
-					bb += "[color=#6b7385]%s[/color]\n" % escaped
-			elif is_active:
-				bb += "[color=%s]|[/color] %s\n" % [hex, escaped]
+					bb += "[color=#6b7385]%s%s[/color]\n" % [indent, escaped]
 			else:
-				bb += "[color=#6b7385]%s[/color]\n" % escaped
-		else:
-			bb += "[color=#8b93a7]%s[/color]\n" % escaped
+				bb += "[color=#8b93a7]%s%s[/color]\n" % [indent, escaped]
 	log_label.text = bb
 
 
+func _wrap_log_line(text: String) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	var remaining := text.strip_edges()
+	const BUDGET := 42
+	while remaining.length() > BUDGET:
+		var cut := _log_break_at(remaining, BUDGET)
+		if cut <= 0 or cut >= remaining.length():
+			break
+		out.append(remaining.substr(0, cut).strip_edges())
+		remaining = remaining.substr(cut).strip_edges()
+	if remaining != "":
+		out.append(remaining)
+	return out
+
+
+func _log_break_at(s: String, budget: int) -> int:
+	var limit := mini(s.length() - 1, budget + 12)
+	var sentence := -1
+	for i in range(1, limit + 1):
+		if s.substr(i - 1, 2) == ". ":
+			sentence = i
+	if sentence >= 12:
+		return sentence
+	var comma := s.rfind(", ", budget)
+	if comma >= 12:
+		return comma + 1
+	var space := s.rfind(" ", budget)
+	if space >= 12:
+		return space
+	return budget
+
+
 func _rebuild_status() -> void:
-	for child in status_box.get_children():
-		child.queue_free()
+	if seat_summary == null:
+		return
+	var row1: PackedStringArray = PackedStringArray()
+	var row2: PackedStringArray = PackedStringArray()
 	for i in ArenaMatch.PLAYER_COUNT:
-		var line := Label.new()
-		line.add_theme_color_override("font_color", PLAYER_COLORS[i])
-		if game.alive[i]:
-			var seat := "CPU" if is_cpu[i] else "human"
-			line.text = "%s  HP %d  XP %d  ·  %s%s" % [
-				ArenaMatch.PLAYER_NAMES[i],
-				game.hp[i],
-				game.xp[i],
-				seat,
-				_cooldown_status(i),
-			]
+		var hex: String = PLAYER_COLORS[i].to_html(false)
+		var seat := "CPU" if is_cpu[i] else "human"
+		if not game.alive[i]:
+			seat = "out"
+		var bit := "[color=#%s][b]%s[/b][/color] %s" % [hex, ArenaMatch.PLAYER_NAMES[i], seat]
+		if i < 2:
+			row1.append(bit)
 		else:
-			line.text = "%s  eliminated" % ArenaMatch.PLAYER_NAMES[i]
-			line.add_theme_color_override("font_color", Color("6b7385"))
-		status_box.add_child(line)
+			row2.append(bit)
+	seat_summary.text = "[right]%s\n%s[/right]" % ["   ".join(row1), "   ".join(row2)]
 
 
 func _draft_used_kinds() -> Array:
@@ -857,17 +909,6 @@ func _dimmed_kinds() -> Array:
 		if not game.ability_ready(declaring_player, kind):
 			kinds.append(kind)
 	return kinds
-
-
-func _cooldown_status(player_id: int) -> String:
-	var bits: PackedStringArray = PackedStringArray()
-	for kind in game.owned[player_id]:
-		var left := game.cooldown_left(player_id, kind)
-		if left > 0:
-			bits.append("%s %d" % [ArenaMatch.kind_name(kind), left])
-	if bits.is_empty():
-		return ""
-	return "  ·  CD " + ", ".join(bits)
 
 
 func _rebuild_level_choices() -> void:
@@ -952,6 +993,7 @@ func _on_pick_level(kind: ArenaMatch.ActionKind) -> void:
 
 func _on_cpu_toggled(index: int, on: bool) -> void:
 	is_cpu[index] = on
+	_rebuild_status()
 	_kick_cpu()
 
 
