@@ -37,6 +37,7 @@ func _run() -> void:
 	_test_declare_follows_priority()
 	_test_once_per_round_limit()
 	_test_xp_and_level_up()
+	_test_starting_ability()
 	_test_heal()
 	_test_flying_kick()
 	_test_frost_ring()
@@ -108,8 +109,15 @@ func idle() -> Array:
 	return [ArenaMatch.make_pass()]
 
 
-func match_with(programs: Dictionary) -> ArenaMatch:
+func match_new() -> ArenaMatch:
 	var m := ArenaMatch.new()
+	for i in ArenaMatch.PLAYER_COUNT:
+		m.owned[i] = [ArenaMatch.ActionKind.MOVE, ArenaMatch.ActionKind.SHURIKEN, ArenaMatch.ActionKind.PUNCH]
+	return m
+
+
+func match_with(programs: Dictionary) -> ArenaMatch:
+	var m := match_new()
 	m.play_programmed_round(programs)
 	return m
 
@@ -124,16 +132,16 @@ func filled(p0: String, p1: String = "", p2: String = "", p3: String = "") -> Di
 
 
 func _test_start_positions() -> void:
-	var m := ArenaMatch.new()
-	expect(m.positions[0] == Vector2i(0, 4), "P1 starts A5")
-	expect(m.positions[1] == Vector2i(1, 0), "P2 starts B1")
-	expect(m.positions[2] == Vector2i(4, 5), "P3 starts E6")
-	expect(m.positions[3] == Vector2i(5, 1), "P4 starts F2")
-	expect(ArenaMatch.tile_name(m.positions[0]) == "A5", "tile name A5")
+	var m := match_new()
+	expect(m.positions[0] == Vector2i(1, 5), "P1 starts B6")
+	expect(m.positions[1] == Vector2i(0, 1), "P2 starts A2")
+	expect(m.positions[2] == Vector2i(4, 0), "P3 starts E1")
+	expect(m.positions[3] == Vector2i(5, 4), "P4 starts F5")
+	expect(ArenaMatch.tile_name(m.positions[0]) == "B6", "tile name B6")
 
 
 func _test_pass_stays_put() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	var start: Vector2i = m.positions[0]
 	m.play_programmed_round(filled("M"))
 	expect(m.positions[0] == start, "pass / stay does not move")
@@ -141,12 +149,12 @@ func _test_pass_stays_put() -> void:
 
 
 func _test_wall_blocks_move() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	for _i in 3:
 		m.play_programmed_round(filled("M N"))
-	# P1 A5: N three turns -> A4, A3, A2
-	expect(m.positions[0] == Vector2i(0, 1), "P1 walked north to A2")
-	m = ArenaMatch.new()
+	# P1 B6: N three turns -> B5, B4, B3
+	expect(m.positions[0] == Vector2i(1, 2), "P1 walked north to B3")
+	m = match_new()
 	m.positions[1] = Vector2i(1, 0)
 	m.play_programmed_round(filled("M", "M N"))
 	expect(m.positions[1] == Vector2i(1, 0), "P2 north from B1 is wall, stays")
@@ -154,11 +162,11 @@ func _test_wall_blocks_move() -> void:
 
 func _test_simple_move() -> void:
 	var m := match_with(filled("M E"))
-	expect(m.positions[0] == Vector2i(1, 4), "P1 A5 east to B5")
+	expect(m.positions[0] == Vector2i(2, 5), "P1 B6 east to C6")
 
 
 func _test_push() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(1, 2) # B3
 	m.positions[1] = Vector2i(2, 2) # C3
 	m.play_programmed_round(filled("M E"))
@@ -167,7 +175,7 @@ func _test_push() -> void:
 
 
 func _test_chain_push() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(1, 2) # B3
 	m.positions[2] = Vector2i(2, 2) # C3
@@ -178,7 +186,7 @@ func _test_chain_push() -> void:
 
 
 func _test_push_wall_fails_entire_chain() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(3, 2) # D3
 	m.positions[1] = Vector2i(4, 2) # E3
 	m.positions[2] = Vector2i(5, 2) # F3 against east wall
@@ -189,20 +197,21 @@ func _test_push_wall_fails_entire_chain() -> void:
 
 
 func _test_shuriken_hit_and_whiff() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(4, 2) # E3
 	m.play_programmed_round(filled("S E", "S W"))
 	expect(m.hp[1] == 18, "P2 took shuriken 2")
 	expect(m.hp[0] == 18, "P1 took return shuriken 2")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.positions[0] = Vector2i(0, 5)
+	m.positions[1] = Vector2i(1, 0)
 	m.play_programmed_round(filled("S N"))
 	expect(m.hp[1] == 20 and m.hp[2] == 20 and m.hp[3] == 20, "north from A6 whiffs others")
 
 
 func _test_diagonal_shuriken() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(2, 3) # C4
 	m.positions[1] = Vector2i(3, 2) # D3  (NE of C4)
 	m.play_programmed_round(filled("S NE"))
@@ -210,12 +219,12 @@ func _test_diagonal_shuriken() -> void:
 
 
 func _test_punch_range() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(2, 2) # two tiles east — punch should whiff
 	m.play_programmed_round(filled("P E"))
 	expect(m.hp[1] == 20, "punch range 1 whiffs at distance 2")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(1, 2)
 	m.play_programmed_round(filled("P E"))
@@ -225,7 +234,7 @@ func _test_punch_range() -> void:
 func _test_speed_order() -> void:
 	# Same slot: P1 steps north off the rank, P2 throws west along that rank.
 	# Instant must resolve first so the shuriken whiffs.
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(1, 2) # B3
 	m.positions[1] = Vector2i(3, 2) # D3
 	m.play_programmed_round(filled("M N", "S W"))
@@ -235,7 +244,7 @@ func _test_speed_order() -> void:
 
 func _test_lower_priority_can_push_after() -> void:
 	# P1 (higher) moves east into empty. P2 later moves west onto P1 and pushes.
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(2, 2) # C3
 	m.positions[1] = Vector2i(4, 2) # E3
 	m.priority = [0, 1, 2, 3]
@@ -253,7 +262,7 @@ func _test_priority_rotates_after_round() -> void:
 
 
 func _test_mutual_ko_same_tier() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.hp[0] = 4
 	m.hp[1] = 4
 	m.positions[0] = Vector2i(0, 2)
@@ -264,7 +273,7 @@ func _test_mutual_ko_same_tier() -> void:
 
 
 func _test_dead_skip_later_slots() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.hp[1] = 4
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(1, 2)
@@ -274,7 +283,7 @@ func _test_dead_skip_later_slots() -> void:
 
 
 func _test_same_tier_snapshot_combat() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.FLYING_KICK)
 	m.owned[1].append(ArenaMatch.ActionKind.FROST_RING)
 	m.positions[0] = Vector2i(2, 2) # C3
@@ -285,7 +294,7 @@ func _test_same_tier_snapshot_combat() -> void:
 
 
 func _test_normal_mutual_shuriken() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.hp[0] = 2
 	m.hp[1] = 2
 	m.positions[0] = Vector2i(0, 2)
@@ -295,7 +304,7 @@ func _test_normal_mutual_shuriken() -> void:
 
 
 func _test_win_last_player() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.hp[0] = 4
 	m.hp[1] = 4
 	m.hp[2] = 4
@@ -319,9 +328,9 @@ func _test_win_last_player() -> void:
 
 func _test_step_through_matches_batch() -> void:
 	var programs := filled("M E", "M W", "M N", "M S")
-	var batch := ArenaMatch.new()
+	var batch := match_new()
 	batch.play_programmed_round(programs)
-	var stepped := ArenaMatch.new()
+	var stepped := match_new()
 	stepped.programs.clear()
 	stepped.phase = ArenaMatch.Phase.DECLARE
 	for id in programs.keys():
@@ -343,15 +352,15 @@ func _test_step_through_matches_batch() -> void:
 
 
 func _test_declare_preview_chains_moves() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	var slots: Array = [ArenaMatch.make_action(ArenaMatch.ActionKind.MOVE, ArenaMatch.DIR_E)]
 	var preview: Dictionary = m.declare_preview(0, slots)
-	expect(preview.plan_origin == Vector2i(1, 4), "single Move east ghosts to B5")
+	expect(preview.plan_origin == Vector2i(2, 5), "single Move east ghosts to C6")
 	expect(preview.steps.size() == 1, "one declared action, one ghost")
-	expect(preview.steps[0].to == Vector2i(1, 4), "ghost lands on B5")
+	expect(preview.steps[0].to == Vector2i(2, 5), "ghost lands on C6")
 	slots[0] = {}
 	preview = m.declare_preview(0, slots)
-	expect(preview.plan_origin == Vector2i(0, 4), "clearing the action resets origin to A5")
+	expect(preview.plan_origin == Vector2i(1, 5), "clearing the action resets origin to B6")
 
 
 func _test_declare_follows_priority() -> void:
@@ -365,7 +374,7 @@ func _test_declare_follows_priority() -> void:
 
 
 func _test_once_per_round_limit() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	var err := m.submit_program(0, prog("S N"))
 	expect(err == "", "Shuriken is legal on turn 1")
 	m.play_programmed_round({0: prog("S N"), 1: idle(), 2: idle(), 3: idle()})
@@ -382,16 +391,16 @@ func _test_once_per_round_limit() -> void:
 func _test_xp_and_level_up() -> void:
 	var m := match_with(filled("M N"))
 	expect(m.xp[0] == 1, "alive-only turn is 1 XP")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(1, 2)
 	m.play_programmed_round(filled("P E"))
 	expect(m.xp[1] == 2, "damage bonus stacks on base XP")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.positions[0] = Vector2i(2, 2) # C3
 	m.play_programmed_round(filled("M E"))
 	expect(m.xp[0] == 2, "center occupancy bonus stacks on base XP")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.xp[0] = 14
 	m.rng.seed = 1
 	m.play_programmed_round(filled("M N"))
@@ -400,13 +409,38 @@ func _test_xp_and_level_up() -> void:
 	expect(m.phase == ArenaMatch.Phase.DECLARE, "tests auto-resolve the level-up pick")
 
 
-func _test_heal() -> void:
+func _test_starting_ability() -> void:
 	var m := ArenaMatch.new()
+	for i in ArenaMatch.PLAYER_COUNT:
+		expect(m.owned[i].size() == 4, "each player starts with one granted ability")
+		expect(m.owned[i][0] == ArenaMatch.ActionKind.MOVE, "Move is still first")
+		expect(m.owned[i][1] == ArenaMatch.ActionKind.SHURIKEN, "Shuriken stays in the base kit")
+		expect(m.owned[i][2] == ArenaMatch.ActionKind.PUNCH, "Punch stays in the base kit")
+		var extra: ArenaMatch.ActionKind = m.owned[i][3]
+		expect(extra in ArenaMatch.STARTING_POOL, "starter is from the opening pool")
+		expect(extra != ArenaMatch.ActionKind.HEAL, "Heal is not granted at match start")
+		expect(m.ability_ready(i, extra), "starting ability is available on turn 1")
+		expect(m.cooldown_left(i, extra) == 0, "starting ability is not on cooldown")
+		expect(not m.unowned_acquirable(i).has(extra), "starter is not still on the level-up pool")
+	m.rng.seed = 77
+	for i in ArenaMatch.PLAYER_COUNT:
+		m.owned[i] = [ArenaMatch.ActionKind.MOVE, ArenaMatch.ActionKind.SHURIKEN, ArenaMatch.ActionKind.PUNCH]
+	m._grant_starting_abilities()
+	var first: Array = m.owned[0].duplicate()
+	m.rng.seed = 77
+	for i in ArenaMatch.PLAYER_COUNT:
+		m.owned[i] = [ArenaMatch.ActionKind.MOVE, ArenaMatch.ActionKind.SHURIKEN, ArenaMatch.ActionKind.PUNCH]
+	m._grant_starting_abilities()
+	expect(m.owned[0] == first, "the same seed grants the same starting abilities")
+
+
+func _test_heal() -> void:
+	var m := match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.HEAL)
 	m.hp[0] = 10
 	m.play_programmed_round(filled("H"))
 	expect(m.hp[0] == 12, "Heal restores 2")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.HEAL)
 	m.hp[0] = 19
 	m.play_programmed_round(filled("H"))
@@ -414,21 +448,21 @@ func _test_heal() -> void:
 
 
 func _test_flying_kick() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.FLYING_KICK)
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(2, 2) # C3
 	m.play_programmed_round(filled("K E"))
 	expect(m.positions[0] == Vector2i(1, 2), "kick steps to B3")
 	expect(m.hp[1] == 18, "kick deals 2 to the tile beyond the landing")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.FLYING_KICK)
 	m.positions[0] = Vector2i(0, 0) # A1
 	m.positions[1] = Vector2i(0, 1) # A2 south of wall-fail north
 	m.play_programmed_round(filled("K N"))
 	expect(m.positions[0] == Vector2i(0, 0), "wall-fail kick does not move")
 	expect(m.hp[1] == 20, "nothing north of A1 to hit")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.FLYING_KICK)
 	m.positions[0] = Vector2i(4, 2) # E3
 	m.positions[1] = Vector2i(5, 2) # F3 against east wall
@@ -436,7 +470,7 @@ func _test_flying_kick() -> void:
 	expect(m.positions[0] == Vector2i(4, 2), "blocked push-kick stays put")
 	expect(m.positions[1] == Vector2i(5, 2), "wall-fail kick does not push")
 	expect(m.hp[1] == 18, "wall-fail kick still hits the adjacent target")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.FLYING_KICK)
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(1, 2) # B3 adjacent
@@ -447,7 +481,7 @@ func _test_flying_kick() -> void:
 
 
 func _test_frost_ring() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.FROST_RING)
 	m.positions[0] = Vector2i(2, 2) # C3
 	m.positions[1] = Vector2i(2, 3) # C4
@@ -466,7 +500,7 @@ func _test_spear_strike() -> void:
 	expect(ArenaMatch.spear_tiles(Vector2i(0, 2), ArenaMatch.DIR_W).is_empty(), "off-grid first tile yields no strike")
 	var edge := ArenaMatch.spear_tiles(Vector2i(4, 2), ArenaMatch.DIR_E)
 	expect(edge.size() == 1 and edge[0] == Vector2i(5, 2), "near-edge spear still checks the on-grid first tile")
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.SPEAR_STRIKE)
 	m.positions[0] = Vector2i(1, 2) # B3
 	m.positions[1] = Vector2i(2, 2) # C3 range 1
@@ -476,20 +510,20 @@ func _test_spear_strike() -> void:
 	expect(m.hp[1] == 17, "spear deals 3 at range 1")
 	expect(m.hp[2] == 17, "spear deals 3 at range 2 independently")
 	expect(m.hp[3] == 20, "spear does not continue past range 2")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.SPEAR_STRIKE)
 	m.positions[0] = Vector2i(1, 2)
 	m.positions[1] = Vector2i(3, 2) # only range 2 occupied
 	m.play_programmed_round(filled("T E"))
 	expect(m.hp[1] == 17, "empty range-1 still hits range 2")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.SPEAR_STRIKE)
 	m.owned[1].append(ArenaMatch.ActionKind.WINDWALL)
 	m.positions[0] = Vector2i(1, 2)
 	m.positions[1] = Vector2i(3, 2)
 	m.play_programmed_round(filled("T E", "W W"))
 	expect(m.hp[1] == 17, "Windwall does not block Spear Strike")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.SPEAR_STRIKE)
 	m.positions[0] = Vector2i(0, 2)
 	m.play_programmed_round(filled("T W"))
@@ -502,7 +536,7 @@ func _test_spear_strike() -> void:
 
 
 func _test_fireball_splash() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.FIREBALL)
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(4, 2) # E3
@@ -510,7 +544,7 @@ func _test_fireball_splash() -> void:
 	m.play_programmed_round(filled("F E"))
 	expect(m.hp[1] == 17, "fireball direct hit 3")
 	expect(m.hp[2] == 19, "fireball splash 1 on neighbor of impact")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.FIREBALL)
 	m.positions[0] = Vector2i(5, 2) # F3
 	m.positions[1] = Vector2i(5, 1) # F2
@@ -519,14 +553,14 @@ func _test_fireball_splash() -> void:
 
 
 func _test_windwall_reflects_projectile() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.owned[1].append(ArenaMatch.ActionKind.WINDWALL)
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(4, 2) # E3
 	m.play_programmed_round(filled("S E", "W W"))
 	expect(m.hp[1] == 20, "Windwall blocks the incoming Shuriken")
 	expect(m.hp[0] == 18, "reflected Shuriken travels west and hits the thrower")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.owned[1].append(ArenaMatch.ActionKind.WINDWALL)
 	m.owned[0].append(ArenaMatch.ActionKind.FROST_RING)
 	m.positions[0] = Vector2i(2, 2)
@@ -536,7 +570,7 @@ func _test_windwall_reflects_projectile() -> void:
 
 
 func _test_windwall_reflect_playback_legs() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.owned[1].append(ArenaMatch.ActionKind.WINDWALL)
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(4, 2)
@@ -575,7 +609,7 @@ func _test_windwall_reflect_playback_legs() -> void:
 
 
 func _test_windwall_lasts_until_cleanup() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.owned[1].append(ArenaMatch.ActionKind.WINDWALL)
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(4, 2)
@@ -608,7 +642,7 @@ func _test_windwall_lasts_until_cleanup() -> void:
 
 
 func _test_uncontested_moves_all_apply() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(5, 2)
 	m.positions[2] = Vector2i(2, 0)
@@ -634,7 +668,7 @@ func _plan_has(plan: Array, kind: ArenaMatch.ActionKind, dir: Vector2i = Vector2
 
 
 func _test_cpu_ignores_hidden_programs() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(4, 2) # E3 in a straight east line
 	# Hidden bait: P2's unrevealed plan leaves the line. A cheating CPU would not throw east.
@@ -645,7 +679,7 @@ func _test_cpu_ignores_hidden_programs() -> void:
 
 
 func _test_cpu_pokes_when_low_and_safe() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.HEAL)
 	m.hp[0] = 5
 	m.positions[0] = Vector2i(0, 0)
@@ -658,7 +692,7 @@ func _test_cpu_pokes_when_low_and_safe() -> void:
 
 
 func _test_cpu_heals_when_threatened_and_low() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.HEAL)
 	m.hp[0] = 5
 	m.positions[0] = Vector2i(2, 2)
@@ -670,7 +704,7 @@ func _test_cpu_heals_when_threatened_and_low() -> void:
 
 
 func _test_cpu_retreats_when_adjacent_and_low() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.hp[0] = 5
 	m.positions[0] = Vector2i(2, 2) # C3 — room to step west
 	m.positions[1] = Vector2i(3, 2) # D3
@@ -682,7 +716,7 @@ func _test_cpu_retreats_when_adjacent_and_low() -> void:
 
 
 func _test_cpu_takes_clear_shuriken() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(0, 2)
 	m.positions[1] = Vector2i(4, 2)
 	var plan: Array = _cpu_plan(m, 0)
@@ -690,7 +724,7 @@ func _test_cpu_takes_clear_shuriken() -> void:
 
 
 func _test_cpu_frost_on_cluster() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.owned[0].append(ArenaMatch.ActionKind.FROST_RING)
 	m.positions[0] = Vector2i(2, 2) # C3
 	m.positions[1] = Vector2i(2, 3) # C4
@@ -701,7 +735,7 @@ func _test_cpu_frost_on_cluster() -> void:
 
 
 func _test_cpu_closes_distance() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(0, 4) # A5
 	m.positions[1] = Vector2i(5, 0) # F1 — not on a ray
 	m.alive[2] = false
@@ -716,7 +750,7 @@ func _test_cpu_closes_distance() -> void:
 
 
 func _test_cpu_predictive_aim() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(3, 1) # D2 — not currently on a ray
 	m.last_step_dir[1] = ArenaMatch.DIR_S # would step to D3, on the east line
@@ -725,7 +759,7 @@ func _test_cpu_predictive_aim() -> void:
 
 
 func _test_cpu_projects_own_moves() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(0, 2) # A3
 	m.positions[1] = Vector2i(2, 3) # C4 — not on a cardinal/diagonal ray
 	var plan: Array = _cpu_plan(m, 0)
@@ -735,7 +769,7 @@ func _test_cpu_projects_own_moves() -> void:
 
 
 func _test_cpu_stand_when_retreat_loops() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.hp[0] = 5
 	m.positions[0] = Vector2i(0, 0) # A1 corner
 	m.positions[1] = Vector2i(1, 0) # B1
@@ -752,7 +786,7 @@ func _test_cpu_stand_when_retreat_loops() -> void:
 
 
 func _test_cpu_never_idles() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.hp[0] = 5
 	m.positions[0] = Vector2i(0, 0) # A1 corner
 	m.positions[1] = Vector2i(1, 0) # B1
@@ -775,7 +809,7 @@ func _test_cpu_never_idles() -> void:
 
 
 func _test_cpu_edge_does_not_walk_into_wall() -> void:
-	var m := ArenaMatch.new()
+	var m := match_new()
 	m.positions[0] = Vector2i(5, 2) # F3 — eastern wall
 	m.positions[1] = Vector2i(2, 3) # C4, not on a ray from F3
 	m.positions[2] = Vector2i(0, 0) # A1
@@ -786,7 +820,7 @@ func _test_cpu_edge_does_not_walk_into_wall() -> void:
 	expect(ArenaMatch.in_bounds(m.positions[0] + plan[0].dir), "approach stays on the board")
 	var dest: Vector2i = m.positions[0] + plan[0].dir
 	expect(dest.x <= m.positions[0].x, "horizontal sign toward C/D and western foes is west, not east")
-	m = ArenaMatch.new()
+	m = match_new()
 	m.hp[0] = 5
 	m.positions[0] = Vector2i(5, 2) # F3
 	m.positions[1] = Vector2i(3, 2) # D3 — threat from the west

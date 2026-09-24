@@ -30,6 +30,12 @@ const TEX_FIREBALL := preload("res://icons/fireball.png")
 const TEX_WINDWALL := preload("res://icons/windwall.png")
 const TEX_HEAL := preload("res://icons/heal.png")
 const TEX_SPEAR := preload("res://icons/spear.png")
+const TEX_CHAR := [
+	preload("res://icons/character1.png"),
+	preload("res://icons/character2.png"),
+	preload("res://icons/character3.png"),
+	preload("res://icons/character4.png"),
+]
 const CELL_MAX := 100.0
 const CELL_MIN := 56.0
 
@@ -60,6 +66,7 @@ const PLAYER_COLORS := [
 	Color("f4a261"),
 	Color("9b72cf"),
 ]
+var portraits: Array[Texture2D] = []
 
 
 func _ready() -> void:
@@ -71,6 +78,7 @@ func _ready() -> void:
 	clip_contents = false
 	set_process(true)
 	resized.connect(_on_resized)
+	_ensure_portraits()
 
 
 func _on_resized() -> void:
@@ -163,7 +171,7 @@ func _ghost_slot_at(local: Vector2) -> int:
 		var kind: ArenaMatch.ActionKind = step.kind
 		match kind:
 			ArenaMatch.ActionKind.MOVE:
-				if local.distance_to(cell_center(step.to)) <= 22.0:
+				if local.distance_to(cell_center(step.to)) <= _token_r() + 8.0:
 					return slot
 			ArenaMatch.ActionKind.PUNCH, ArenaMatch.ActionKind.FLYING_KICK, ArenaMatch.ActionKind.WINDWALL, ArenaMatch.ActionKind.SPEAR_STRIKE:
 				var mid := cell_center(step.from).lerp(_clamped_point(step.from + step.dir), 0.5)
@@ -182,11 +190,17 @@ func _ghost_slot_at(local: Vector2) -> int:
 
 
 func _plan_origin_tile() -> Vector2i:
+	if declare_player >= 0 and match_ref != null and _is_replacing_plan():
+		return match_ref.positions[declare_player]
 	if plan_origin.x >= 0:
 		return plan_origin
 	if declare_player >= 0 and match_ref != null:
 		return match_ref.positions[declare_player]
 	return Vector2i(-1, -1)
+
+
+func _is_replacing_plan() -> bool:
+	return drag != DragKind.NONE or armed_kind >= 0
 
 
 func _rail_kinds() -> Array:
@@ -220,7 +234,7 @@ func _rail_pos_for(player_id: int, index: int) -> Vector2:
 	var grid := Rect2(origin(), Vector2(cell * float(ArenaMatch.COLS), cell * float(ArenaMatch.ROWS)))
 	match player_id:
 		1:
-			var x := grid.end.x + RAIL_OFFSET
+			var x := grid.position.x - RAIL_OFFSET
 			var start_y := grid.position.y + grid.size.y * 0.5 - total * 0.5
 			return Vector2(x, start_y + float(index) * spacing)
 		2:
@@ -228,7 +242,7 @@ func _rail_pos_for(player_id: int, index: int) -> Vector2:
 			var y := grid.position.y - RAIL_OFFSET
 			return Vector2(start_x + float(index) * spacing, y)
 		3:
-			var x := grid.position.x - RAIL_OFFSET
+			var x := grid.end.x + RAIL_OFFSET
 			var start_y := grid.position.y + grid.size.y * 0.5 - total * 0.5
 			return Vector2(x, start_y + float(index) * spacing)
 		_:
@@ -304,13 +318,12 @@ func _try_begin_drag(local: Vector2) -> void:
 		return
 	if not match_ref.alive[declare_player]:
 		return
+	var here: Vector2i = match_ref.positions[declare_player]
+	var on_tile := _cell_at(local) == here
 	var ghost_slot := _ghost_slot_at(local)
-	var origin_tile := _plan_origin_tile()
-	var origin_c := cell_center(origin_tile)
-	var real_c := cell_center(match_ref.positions[declare_player])
-	var on_origin := local.distance_to(origin_c) <= 24.0 or local.distance_to(real_c) <= 24.0
-	if ghost_slot >= 0 and not on_origin:
+	if ghost_slot >= 0 and not on_tile:
 		plan_slot_clicked.emit(ghost_slot)
+		clear_arm()
 		return
 	var kinds := _rail_kinds_for(declare_player)
 	for i in kinds.size():
@@ -330,17 +343,17 @@ func _try_begin_drag(local: Vector2) -> void:
 			set_process_input(true)
 			queue_redraw()
 			return
-	if _try_commit_armed(local):
-		return
-	if on_origin:
+	if on_tile:
 		if armed_kind >= 0 and armed_kind != int(ArenaMatch.ActionKind.MOVE):
 			return
 		drag = DragKind.TOKEN
 		_set_armed(int(ArenaMatch.ActionKind.MOVE))
-		ghost_tile = origin_tile
+		ghost_tile = here
 		drag_start = local
 		set_process_input(true)
 		queue_redraw()
+		return
+	if _try_commit_armed(local):
 		return
 	if slots_full:
 		full_t = 0.7
@@ -377,10 +390,12 @@ func _finish_drag(local: Vector2) -> void:
 				var gs := _ghost_slot_at(drag_start)
 				if gs >= 0:
 					plan_slot_clicked.emit(gs)
+					clear_arm()
 					queue_redraw()
 					return
 			invalid_t = 0.4
 			drag_cancelled.emit("invalid_move")
+			clear_arm()
 	elif mode == DragKind.ABILITY:
 		var kind: ArenaMatch.ActionKind = drag_ability as ArenaMatch.ActionKind
 		if not ArenaMatch.needs_aim(kind):
@@ -388,6 +403,7 @@ func _finish_drag(local: Vector2) -> void:
 		elif ability_dir == Vector2i.ZERO:
 			invalid_t = 0.35
 			drag_cancelled.emit("short")
+			clear_arm()
 		else:
 			var dir := ability_dir
 			if kind == ArenaMatch.ActionKind.MOVE:
@@ -395,6 +411,7 @@ func _finish_drag(local: Vector2) -> void:
 				if dir == Vector2i.ZERO:
 					invalid_t = 0.35
 					drag_cancelled.emit("invalid_move")
+					clear_arm()
 				else:
 					move_dropped.emit(dir)
 			else:
@@ -418,8 +435,7 @@ func _try_commit_armed(local: Vector2) -> bool:
 			ability_clicked.emit(akind)
 			return true
 		return false
-	var origin_c := cell_center(origin)
-	if local.distance_to(origin_c) <= 24.0:
+	if tile == origin:
 		return false
 	var dir := _snap_aim(local)
 	if dir == Vector2i.ZERO:
@@ -438,7 +454,11 @@ func _cancel_drag(_reason: String) -> void:
 	ability_dir = Vector2i.ZERO
 	drag_ability = -1
 	set_process_input(false)
-	queue_redraw()
+	if _reason != "rearm":
+		clear_arm()
+	else:
+		hover_aim_dir = Vector2i.ZERO
+		queue_redraw()
 
 
 func _octant_dir(v: Vector2) -> Vector2i:
@@ -535,6 +555,54 @@ func cell_center(pos: Vector2i) -> Vector2:
 
 func _token_r() -> float:
 	return clampf(cell * 0.30, 20.0, 34.0)
+
+
+func _ensure_portraits() -> void:
+	if portraits.size() == TEX_CHAR.size():
+		return
+	portraits.clear()
+	for tex in TEX_CHAR:
+		portraits.append(_silhouette_tex(tex))
+
+
+func _silhouette_tex(tex: Texture2D) -> Texture2D:
+	if tex == null:
+		return tex
+	var img := tex.get_image()
+	if img == null:
+		return tex
+	if img.is_compressed():
+		img.decompress()
+	img.convert(Image.FORMAT_RGBA8)
+	for y in img.get_height():
+		for x in img.get_width():
+			var c := img.get_pixel(x, y)
+			var lum := c.get_luminance()
+			img.set_pixel(x, y, Color(1, 1, 1, lum))
+	return ImageTexture.create_from_image(img)
+
+
+func _portrait_tex(player_id: int) -> Texture2D:
+	_ensure_portraits()
+	if player_id < 0 or player_id >= portraits.size():
+		return null
+	return portraits[player_id]
+
+
+func _draw_portrait(player_id: int, center: Vector2, px: float, modulate: Color) -> void:
+	var tex := _portrait_tex(player_id)
+	if tex == null:
+		return
+	var r := Rect2(center - Vector2(px, px) * 0.5, Vector2(px, px))
+	draw_texture_rect(tex, r, false, modulate)
+
+
+func _draw_player_token(player_id: int, center: Vector2, col: Color, scale: Vector2 = Vector2.ONE) -> void:
+	draw_set_transform(center, 0.0, scale)
+	draw_circle(Vector2.ZERO, _token_r(), col)
+	draw_circle(Vector2.ZERO, _token_r(), Color(0, 0, 0, 0.55 * col.a), false, 2.0)
+	_draw_portrait(player_id, Vector2.ZERO, _token_r() * 2.05, Color(1, 1, 1, col.a))
+	draw_set_transform(Vector2.ZERO)
 
 
 func _clamped_point(pos: Vector2i) -> Vector2:
@@ -711,19 +779,7 @@ func _draw() -> void:
 		if drag == DragKind.TOKEN and i == declare_player:
 			col.a = 0.45
 		var scale: Vector2 = visual.scale
-		draw_set_transform(center, 0.0, scale)
-		draw_circle(Vector2.ZERO, _token_r(), col)
-		draw_circle(Vector2.ZERO, _token_r(), Color(0, 0, 0, 0.55), false, 2.0)
-		draw_set_transform(Vector2.ZERO)
-		draw_string(
-			ThemeDB.fallback_font,
-			center + Vector2(-12, 6),
-			ArenaMatch.PLAYER_NAMES[i],
-			HORIZONTAL_ALIGNMENT_LEFT,
-			-1,
-			16,
-			Color.WHITE
-		)
+		_draw_player_token(i, center, col, scale)
 		_draw_hp_chip(i, center)
 		_draw_windwall_cover(i, center)
 	_draw_plan_ghosts()
@@ -759,6 +815,8 @@ func _draw() -> void:
 
 func _draw_plan_ghosts() -> void:
 	if not declare_active or declare_player < 0:
+		return
+	if _is_replacing_plan():
 		return
 	var col_base: Color = PLAYER_COLORS[declare_player]
 	for step in plan_steps:
@@ -807,15 +865,13 @@ func _draw_plan_step(step: Dictionary, col: Color, a: float, show_badge: bool) -
 		ArenaMatch.ActionKind.MOVE:
 			_draw_arrow(cell_center(step.from), cell_center(step.to), col, 2.4)
 			var c := cell_center(step.to)
-			draw_circle(c, _token_r(), col)
-			draw_circle(c, _token_r(), Color(1, 1, 1, a), false, 1.6)
+			_draw_player_token(declare_player, c, col)
 			if show_badge:
 				_draw_slot_badge(c + Vector2(14, -18), slot + 1, col_base, a)
 		ArenaMatch.ActionKind.FLYING_KICK:
 			_draw_arrow(cell_center(step.from), cell_center(step.to), col, 2.4)
 			var land := cell_center(step.to)
-			draw_circle(land, _token_r(), col)
-			draw_circle(land, _token_r(), Color(1, 1, 1, a), false, 1.6)
+			_draw_player_token(declare_player, land, col)
 			var beyond_tiles: Array = step.get("tiles", [])
 			if not beyond_tiles.is_empty():
 				var strike: Vector2i = beyond_tiles[0]
@@ -900,7 +956,7 @@ func _draw_ghost() -> void:
 	else:
 		col = Color(0.95, 0.25, 0.22, 0.4)
 	var c := cell_center(dest)
-	draw_circle(c, _token_r(), col)
+	_draw_player_token(declare_player, c, col)
 	draw_circle(c, _token_r(), Color(1, 1, 1, 0.35), false, 2.0)
 
 
@@ -971,11 +1027,12 @@ func _draw_rail_stats(player_id: int, first_icon: Vector2, accent: Color, alive:
 	var info := "eliminated"
 	if alive and match_ref != null:
 		info = "HP %d   XP %d" % [match_ref.hp[player_id], match_ref.xp[player_id]]
-	var pos := first_icon + Vector2(-78, -8)
+	var pos := first_icon + Vector2(-96, -8)
 	if player_id == 1 or player_id == 3:
 		pos = first_icon + Vector2(-16, -ICON_R - 34)
-	draw_string(ThemeDB.fallback_font, pos, rail_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, name_col)
-	draw_string(ThemeDB.fallback_font, pos + Vector2(0, 14), info, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, info_col)
+	_draw_portrait(player_id, pos + Vector2(10, 10), 22.0, Color(1, 1, 1, 1.0 if alive else 0.45))
+	draw_string(ThemeDB.fallback_font, pos + Vector2(24, 0), rail_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, name_col)
+	draw_string(ThemeDB.fallback_font, pos + Vector2(24, 14), info, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, info_col)
 
 
 func _draw_cd_badge(icon_center: Vector2, turns: int) -> void:

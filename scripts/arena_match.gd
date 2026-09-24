@@ -28,6 +28,7 @@ enum Phase { DECLARE, REVEAL, RESOLVING, LEVEL_UP, MATCH_OVER }
 const COL_LETTERS := ["A", "B", "C", "D", "E", "F"]
 const PLAYER_NAMES := ["P1", "P2", "P3", "P4"]
 const ACQUIRABLE := [ActionKind.HEAL, ActionKind.FLYING_KICK, ActionKind.FROST_RING, ActionKind.FIREBALL, ActionKind.WINDWALL, ActionKind.SPEAR_STRIKE]
+const STARTING_POOL := [ActionKind.FLYING_KICK, ActionKind.FROST_RING, ActionKind.FIREBALL, ActionKind.WINDWALL, ActionKind.SPEAR_STRIKE]
 const CLOCKWISE := [
 	Vector2i(0, -1), Vector2i(1, -1), Vector2i(1, 0), Vector2i(1, 1),
 	Vector2i(0, 1), Vector2i(-1, 1), Vector2i(-1, 0), Vector2i(-1, -1),
@@ -45,12 +46,12 @@ const DIR_SW := Vector2i(-1, 1)
 const ORTHOGONAL := [DIR_N, DIR_S, DIR_E, DIR_W]
 const ALL_DIRS := [DIR_N, DIR_NE, DIR_E, DIR_SE, DIR_S, DIR_SW, DIR_W, DIR_NW]
 
-## A5, B1, E6, F2 — no shared row, column, or diagonal at start.
+## B6, A2, E1, F5 — each sits near their clockwise panel (bottom, left, top, right).
 const START_POSITIONS := [
-	Vector2i(0, 4),
-	Vector2i(1, 0),
-	Vector2i(4, 5),
-	Vector2i(5, 1),
+	Vector2i(1, 5),
+	Vector2i(0, 1),
+	Vector2i(4, 0),
+	Vector2i(5, 4),
 ]
 
 ## C3, C4, D3, D4
@@ -380,7 +381,21 @@ func reset_match() -> void:
 	round_index = 1
 	phase = Phase.DECLARE
 	current_slot = 0
+	_grant_starting_abilities()
 	_log("Match start. Priority %s." % _priority_text(), -1)
+
+
+func _grant_starting_abilities() -> void:
+	if STARTING_POOL.is_empty():
+		return
+	var last := STARTING_POOL.size() - 1
+	for i in PLAYER_COUNT:
+		if not alive[i]:
+			continue
+		var pick: ActionKind = STARTING_POOL[rng.randi_range(0, last)]
+		if not owns(i, pick):
+			owned[i].append(pick)
+		_log("%s starts with %s." % [PLAYER_NAMES[i], kind_name(pick)], -1)
 
 
 func _reset_step_state() -> void:
